@@ -4,14 +4,39 @@ version = "0.1.0"
 description = "CircuitPython driver for the Analog Devices ADXL366/ADXL367 accelerometers"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [
     { name = "Mike Mabey", email = "email@mikemabey.com" },
+]
+keywords = [
+    "adxl366",
+    "adxl367",
+    "accelerometer",
+    "blinka",
+    "circuitpython",
+    "hardware",
+    "i2c",
+    "micropython",
+    "spi",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Embedded Systems",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Hardware",
 ]
 dependencies = [
     "adafruit-circuitpython-busdevice>=5.2.11",
     "circuitpython-stubs>=10.2.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/mmabey/circuitpython-adxl36x"
+Repository = "https://github.com/mmabey/circuitpython-adxl36x"
+Issues = "https://github.com/mmabey/circuitpython-adxl36x/issues"
 
 [dependency-groups]
 dev = [
