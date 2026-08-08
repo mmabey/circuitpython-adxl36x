@@ -1,0 +1,83 @@
+[project]
+name = "circuitpython-adxl36x"
+version = "0.1.0"
+description = "CircuitPython driver for the Analog Devices ADXL366/ADXL367 accelerometers"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Mike Mabey", email = "email@mikemabey.com" },
+]
+dependencies = [
+    "adafruit-circuitpython-busdevice>=5.2.11",
+    "circuitpython-stubs>=10.2.1",
+]
+
+[dependency-groups]
+dev = [
+    "circup>=1.9.0",
+    "pre-commit>=3.5.0",
+    "pytest>=8.4.0",
+    "ruff>=0.16.1",
+    "ty>=0.0.67",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.2,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "adxl36x"
+
+[tool.ty.src]
+include = ["src/adxl36x", "tests"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+extend-select = [
+    "A",
+    "ANN",
+    "ASYNC",
+    "B",  # Should be enabled by default
+    "BLE",
+    "C4",
+    "C90",
+    "COM",
+    "DTZ",
+    "E",  # Should be enabled by default
+    "EM",
+    "EXE",
+    "F",  # Should be enabled by default
+    "FLY",
+    "FURB",
+    "I",
+    "ICN",
+    "INP",
+    "ISC",
+    "N",
+    "PIE",
+    "PLC",
+    "PLE",
+    "PLR",
+    "PLW",
+    "PT",
+    "PTH",
+    "PYI",
+    "Q",
+    "RET",
+    "RSE",
+    "RUF",  # Should be enabled by default
+    "S",
+    "SIM",
+    "T100",
+    "TC",
+    "TID",
+    "TRY",
+    "UP",  # Should be enabled by default
+    "W",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "INP001", "PLR2004", "PLR0913"]
