@@ -3,10 +3,9 @@
 import time
 from typing import TYPE_CHECKING
 
+from adafruit_bus_device.i2c_device import I2CDevice
+from adafruit_bus_device.spi_device import SPIDevice
 from micropython import const
-
-from adxl36x.i2c_device import I2CDevice
-from adxl36x.spi_device import SPIDevice
 
 if TYPE_CHECKING:
     from busio import I2C, SPI
@@ -83,7 +82,7 @@ _POWER_CTL_MODE_MASK = const(0x03)
 
 
 class OpMode:
-    """Values for `ADXL366.power_mode`."""
+    """Values for `ADXL367.power_mode`."""
 
     STANDBY = const(0x00)
     MEASURE = const(0x02)
@@ -110,7 +109,7 @@ _RANGE_SCALE_MULTIPLIER = (1, 2, 4)  # indexed by Range value
 
 
 class DataRate:
-    """Values for `ADXL366.data_rate`."""
+    """Values for `ADXL367.data_rate`."""
 
     RATE_12_5_HZ = const(0x00)
     RATE_25_HZ = const(0x01)
@@ -162,7 +161,7 @@ _FIFO_SAMPLE_SETS_MAX = const(0x1FF)
 
 
 class FIFOMode:
-    """Values for `ADXL366.configure_fifo(mode=...)`."""
+    """Values for `ADXL367.configure_fifo(mode=...)`."""
 
     DISABLED = const(0x00)
     OLDEST_SAVED = const(0x01)
@@ -171,7 +170,7 @@ class FIFOMode:
 
 
 class FIFOFormat:
-    """Values for `ADXL366.configure_fifo(fifo_format=...)`.
+    """Values for `ADXL367.configure_fifo(fifo_format=...)`.
 
     T/A suffixes add a temperature-or-ADC sample (whichever is enabled via
     `temperature`/`adc_value`) to each sample set.
@@ -233,6 +232,82 @@ def _decode_s14(msb: int, lsb: int) -> int:
     return value
 
 
+# -- bus transport --
+
+
+class _I2CDevice(I2CDevice):
+    """`I2CDevice` with a correctly-typed `__exit__`.
+
+    `adafruit_bus_device-stubs` declares `__exit__(self) -> None` (zero
+    args), which doesn't match the real 3-argument context-manager protocol
+    and makes every `with I2CDevice(...) as ...:` a type error. The real
+    `__exit__` only unlocks the bus and always returns a falsy value, so we
+    reimplement it directly here instead of delegating to the mistyped
+    parent method.
+    """
+
+    i2c: "I2C"
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.i2c.unlock()
+
+
+class I2CBus:
+    """Register-level access to a device over I2C."""
+
+    def __init__(self, i2c_bus: "I2C", address: int) -> None:
+        self._device = _I2CDevice(i2c_bus, address)
+
+    def read_into(self, register: int, buffer: bytearray) -> None:
+        with self._device as i2c:
+            i2c.write_then_readinto(bytes((register,)), buffer)
+
+    def write(self, register: int, value: int) -> None:
+        with self._device as i2c:
+            i2c.write(bytes((register, value & 0xFF)))
+
+    def read_fifo_into(self, buffer: bytearray) -> None:
+        with self._device as i2c:
+            i2c.write_then_readinto(bytes((_REG_I2C_FIFO_DATA,)), buffer)
+
+
+class _SPIDevice(SPIDevice):
+    """`SPIDevice` with a correctly-typed `__exit__`. See `_I2CDevice`."""
+
+    spi: "SPI"
+    chip_select: "DigitalInOut | None"
+    cs_active_value: bool
+
+    def __exit__(self, *exc_info: object) -> None:
+        # extra_clocks handling is intentionally omitted: we never construct
+        # this with a nonzero extra_clocks, so upstream's post-CS clock-out
+        # step would always be a no-op here.
+        if self.chip_select:
+            self.chip_select.value = not self.cs_active_value
+        self.spi.unlock()
+
+
+class _SPIBus:
+    """Register-level access to a device over SPI."""
+
+    def __init__(self, spi_bus: "SPI", cs: "DigitalInOut", *, baudrate: int) -> None:
+        self._device = _SPIDevice(spi_bus, cs, baudrate=baudrate, polarity=0, phase=0)
+
+    def read_into(self, register: int, buffer: bytearray) -> None:
+        with self._device as spi:
+            spi.write(bytes((_SPI_READ_REG, register)))
+            spi.readinto(buffer)
+
+    def write(self, register: int, value: int) -> None:
+        with self._device as spi:
+            spi.write(bytes((_SPI_WRITE_REG, register, value & 0xFF)))
+
+    def read_fifo_into(self, buffer: bytearray) -> None:
+        with self._device as spi:
+            spi.write(bytes((_SPI_READ_FIFO,)))
+            spi.readinto(buffer)
+
+
 class ADXL367:
     """Driver for the Analog Devices ADXL367 accelerometer.
 
@@ -244,7 +319,7 @@ class ADXL367:
     _revid = _REVID_ADXL367
 
     def __init__(self, i2c_bus: "I2C", *, address: int = _DEFAULT_I2C_ADDRESS) -> None:
-        self._bus_device: I2CDevice | SPIDevice = I2CDevice(i2c_bus, address)
+        self._bus: I2CBus | _SPIBus = I2CBus(i2c_bus, address)
         self._range = Range.RANGE_2_G
         self._data_rate = DataRate.RATE_100_HZ
         self._initialize()
@@ -259,13 +334,7 @@ class ADXL367:
     ) -> "Self":
         """Construct a driver instance over SPI instead of I2C."""
         self = cls.__new__(cls)
-        self._bus_device = SPIDevice(
-            spi_bus,
-            cs,
-            baudrate=baudrate,
-            polarity=0,
-            phase=0,
-        )
+        self._bus = _SPIBus(spi_bus, cs, baudrate=baudrate)
         self._range = Range.RANGE_2_G
         self._data_rate = DataRate.RATE_100_HZ
         self._initialize()
@@ -274,13 +343,7 @@ class ADXL367:
     # -- low-level bus access --
 
     def _read_into(self, register: int, buffer: bytearray) -> None:
-        if isinstance(self._bus_device, SPIDevice):
-            with self._bus_device as spi:
-                spi.write(bytes((_SPI_READ_REG, register)))
-                spi.readinto(buffer)
-        else:
-            with self._bus_device as i2c:
-                i2c.write_then_readinto(bytes((register,)), buffer)
+        self._bus.read_into(register, buffer)
 
     def _read_u8(self, register: int) -> int:
         buffer = bytearray(1)
@@ -288,25 +351,14 @@ class ADXL367:
         return buffer[0]
 
     def _write_u8(self, register: int, value: int) -> None:
-        if isinstance(self._bus_device, SPIDevice):
-            with self._bus_device as spi:
-                spi.write(bytes((_SPI_WRITE_REG, register, value & 0xFF)))
-        else:
-            with self._bus_device as i2c:
-                i2c.write(bytes((register, value & 0xFF)))
+        self._bus.write(register, value)
 
     def _write_masked(self, register: int, value: int, mask: int) -> None:
         current = self._read_u8(register)
         self._write_u8(register, (current & ~mask) | (value & mask))
 
     def _read_fifo_into(self, buffer: bytearray) -> None:
-        if isinstance(self._bus_device, SPIDevice):
-            with self._bus_device as spi:
-                spi.write(bytes((_SPI_READ_FIFO,)))
-                spi.readinto(buffer)
-        else:
-            with self._bus_device as i2c:
-                i2c.write_then_readinto(bytes((_REG_I2C_FIFO_DATA,)), buffer)
+        self._bus.read_fifo_into(buffer)
 
     def _set_threshold(
         self,
