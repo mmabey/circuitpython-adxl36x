@@ -4,19 +4,21 @@ CircuitPython driver for the Analog Devices [ADXL366](https://www.analog.com/en/
 and [ADXL367](https://www.analog.com/en/products/adxl367.html) ultra-low-power 3-axis MEMS
 accelerometers.
 
-`ADXL366` is the full-featured driver class; `ADXL367` subclasses it and disables the
-features the ADXL367 silicon doesn't implement (pedometer, Z-axis nonlinearity compensation,
-reference readback). Both support SPI and I2C.
+`ADXL367` implements the full shared register map and is the base class. `ADXL366` subclasses
+it, adding the pedometer, Z-axis nonlinearity compensation, and activity/inactivity reference
+readback - the three features the ADXL367 silicon doesn't implement. Both support SPI and I2C.
 
 ## Relationship to `adafruit_adxl34x`
 
 This library's public API deliberately mirrors the shape of
 [Adafruit's `adafruit_adxl34x`](https://github.com/adafruit/Adafruit_CircuitPython_ADXL34x)
 driver for the ADXL34x family (`.acceleration`, `.events`, `enable_tap_detection()`,
-`enable_motion_detection()`, `range`, `data_rate`) so that code written against a 34x-family
-chip needs minimal changes to run against a 366/367. The two chip families are **not**
-register-compatible — only the driver's Python API shape is shared. Notable differences:
+`enable_motion_detection()`, `data_rate`) so that code written against a 34x-family chip needs
+minimal changes to run against a 366/367. The two chip families are **not** register-compatible
+— only the driver's Python API shape is shared. Notable differences:
 
+- `range` is named `g_range` here instead — `range` shadows the Python builtin, and
+  compatibility with the ADXL34x API takes a back seat to that on this one property.
 - No `enable_freefall_detection()` — the 366/367 has no freefall-detection hardware.
 - `Range` tops out at `RANGE_8_G` — the 366/367 doesn't support ±16g.
 - `DataRate` only has 6 discrete rates (12.5 Hz-400 Hz) vs. the 34x's 16.
