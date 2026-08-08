@@ -1,5 +1,12 @@
 # circuitpython-adxl36x
 
+[![PyPI](https://img.shields.io/pypi/v/circuitpython-adxl36x)](https://pypi.org/project/circuitpython-adxl36x/)
+[![Python versions](https://img.shields.io/pypi/pyversions/circuitpython-adxl36x)](https://pypi.org/project/circuitpython-adxl36x/)
+[![License: MIT](https://img.shields.io/pypi/l/circuitpython-adxl36x)](LICENSE)
+[![CI](https://github.com/mmabey/circuitpython-adxl36x/actions/workflows/ci.yml/badge.svg)](https://github.com/mmabey/circuitpython-adxl36x/actions/workflows/ci.yml)
+[![Downloads](https://img.shields.io/pypi/dm/circuitpython-adxl36x)](https://pypi.org/project/circuitpython-adxl36x/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 CircuitPython driver for the Analog Devices [ADXL366](https://www.analog.com/en/products/adxl366.html) and
 [ADXL367](https://www.analog.com/en/products/adxl367.html) ultra-low-power 3-axis MEMS accelerometers.
 
