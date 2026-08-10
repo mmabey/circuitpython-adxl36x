@@ -9,6 +9,7 @@ from adxl36x import (
     _DEVID_MST,
     _PART_ID,
     _REG_I2C_FIFO_DATA,
+    _REG_SOFT_RESET,
     _REVID_ADXL366,
     _SPI_READ_FIFO,
     _SPI_READ_REG,
@@ -36,10 +37,11 @@ def _seeded_registers(revid: int) -> bytearray:
 class FakeI2C:
     """Duck-typed stand-in for `busio.I2C`, backed by an in-memory register file."""
 
-    def __init__(self, *, revid: int = _REVID_ADXL366) -> None:
+    def __init__(self, *, revid: int = _REVID_ADXL366, raise_oserror_on_reset: bool = False) -> None:
         self.registers = _seeded_registers(revid)
         self.fifo_queue = bytearray()
         self.writes: list[tuple[int, int]] = []
+        self._raise_oserror_on_reset = raise_oserror_on_reset
 
     def try_lock(self) -> bool:
         return True
@@ -61,6 +63,12 @@ class FakeI2C:
         register, value = data
         self.registers[register] = value
         self.writes.append((register, value))
+        if register == _REG_SOFT_RESET and self._raise_oserror_on_reset:
+            # Mirrors real ADXL366 hardware: the reset-key write lands (registers above
+            # already reflect it) but commonly raises OSError anyway, since the device
+            # starts resetting its own I2C logic mid-transaction.
+            msg = "Input/output error"
+            raise OSError(5, msg)
 
     def readfrom_into(self, *_args: object, **_kwargs: object) -> None:
         msg = "bare readfrom_into is not used by this driver"

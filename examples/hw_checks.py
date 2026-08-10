@@ -1,0 +1,178 @@
+"""Hardware-in-the-loop checks for ADXL366/ADXL367, exercised against real silicon.
+
+Host-side `tests/` already covers register-level decode/scale/validation logic against
+a fake bus; these checks are for everything that only exists on real hardware. Each
+`check_*` function takes an already-constructed accelerometer instance - built over I2C
+or SPI, on whatever pins the caller wired up - so the same checks run unmodified from
+`hw_sanity_check.py` (a generic board) or from a project's own wiring-specific entry
+point.
+"""
+
+import time
+
+try:
+    from typing import TYPE_CHECKING
+except ImportError:
+    TYPE_CHECKING = False  # ty: ignore[invalid-assignment]
+
+from adxl36x import ADXL367, DataRate, Range
+
+if TYPE_CHECKING:
+    from digitalio import DigitalInOut
+
+_STANDARD_GRAVITY = 9.80665
+_GRAVITY_MAGNITUDE_TOLERANCE_MPS2 = 1.5
+_MIN_PLAUSIBLE_TEMP_C = -20.0
+_MAX_PLAUSIBLE_TEMP_C = 60.0
+_MOTION_WAIT_TIMEOUT_S = 10.0
+_INACTIVITY_WAIT_TIMEOUT_S = 15.0
+_INACTIVITY_TIME_S = 2
+_POLL_INTERVAL_S = 0.05
+_REFERENCE_SETTLE_S = 1.0
+_INACTIVITY_SETTLE_S = 3.0
+_MOTION_THRESHOLD = 300
+
+
+def _report(name: str, passed: bool, detail: str = "") -> bool:
+    status = "PASS" if passed else "FAIL"
+    suffix = f" - {detail}" if detail else ""
+    print(f"[{status}] {name}{suffix}")
+    return passed
+
+
+def check_identification(accel: ADXL367) -> bool:
+    """Construction already validated DEVID/PARTID/REVID; confirm serial_number reads too."""
+    serial = accel.serial_number
+    return _report("identification", serial != 0, f"serial={serial:#010x}")
+
+
+def check_range_and_rate_roundtrip(accel: ADXL367) -> bool:
+    """Confirm g_range/data_rate writes actually land in the real FILTER_CTL register."""
+    results = []
+    for value in (Range.RANGE_2_G, Range.RANGE_4_G, Range.RANGE_8_G):
+        accel.g_range = value
+        results.append(accel.g_range == value)
+    for value in (DataRate.RATE_12_5_HZ, DataRate.RATE_100_HZ, DataRate.RATE_400_HZ):
+        accel.data_rate = value
+        results.append(accel.data_rate == value)
+    accel.g_range = Range.RANGE_2_G
+    accel.data_rate = DataRate.RATE_100_HZ
+    return _report("range/rate roundtrip", all(results))
+
+
+def check_offset_roundtrip(accel: ADXL367) -> bool:
+    original = accel.offset
+    accel.offset = (3, 5, 7)
+    ok = accel.offset == (3, 5, 7)
+    accel.offset = original
+    return _report("offset roundtrip", ok, f"restored to {original}")
+
+
+def check_temperature(accel: ADXL367) -> bool:
+    temp_c = accel.temperature
+    ok = _MIN_PLAUSIBLE_TEMP_C <= temp_c <= _MAX_PLAUSIBLE_TEMP_C
+    return _report("temperature plausibility", ok, f"{temp_c:.1f}C")
+
+
+def check_self_test(accel: ADXL367) -> bool:
+    return _report("self_test()", accel.self_test())
+
+
+def check_at_rest_gravity(accel: ADXL367) -> bool:
+    """With the board stationary, the acceleration vector's magnitude should read ~1g.
+
+    Checking magnitude rather than individual axes keeps this orientation-independent -
+    there's no way to guarantee a hand-wired setup is perfectly level, and the
+    datasheet's own 0g offset spec (+/-150mg on X/Y, +/-250mg on Z) already allows more
+    per-axis slop than would fit a "one axis at 1g, the other two at 0g" assumption.
+    """
+    x, y, z = accel.acceleration
+    magnitude = (x**2 + y**2 + z**2) ** 0.5
+    ok = abs(magnitude - _STANDARD_GRAVITY) < _GRAVITY_MAGNITUDE_TOLERANCE_MPS2
+    detail = f"|a|={magnitude:.2f} m/s^2 (x={x:+.2f} y={y:+.2f} z={z:+.2f})"
+    return _report("at-rest gravity", ok, detail)
+
+
+def run_all(accel: ADXL367) -> bool:
+    """Run every non-interactive check in sequence. Returns True only if all of them passed."""
+    checks = (
+        check_identification,
+        check_range_and_rate_roundtrip,
+        check_offset_roundtrip,
+        check_temperature,
+        check_self_test,
+        check_at_rest_gravity,
+    )
+    results = [check(accel) for check in checks]
+    print(f"\n{sum(results)}/{len(results)} checks passed")
+    return all(results)
+
+
+def _wait_for_pin(pin: "DigitalInOut", timeout_s: float) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if pin.value:
+            return True
+        time.sleep(_POLL_INTERVAL_S)
+    return False
+
+
+def check_motion_interrupt(accel: ADXL367, int1_pin: "DigitalInOut") -> bool:
+    """Physically move/shake the board when prompted.
+
+    Confirms activity detection end to end: real acceleration -> ACT_INACT_CTL ->
+    STATUS register -> the event routed to the physical INT1 pin via map_interrupt().
+    Uses referenced (not absolute) detection - per the datasheet, absolute detection
+    with a sub-1g threshold triggers immediately from gravity alone on whichever axis
+    is vertical, never actually waiting for real motion.
+    """
+    print("Hold the board still for a moment (capturing reference)...")
+    time.sleep(_REFERENCE_SETTLE_S)
+    accel.map_interrupt(1, {"activity"})
+    accel.enable_motion_detection(threshold=_MOTION_THRESHOLD, time_=0, referenced=True)
+    try:
+        print(f"MOVE/SHAKE THE BOARD NOW - waiting up to {_MOTION_WAIT_TIMEOUT_S:.0f}s...")
+        pin_asserted = _wait_for_pin(int1_pin, _MOTION_WAIT_TIMEOUT_S)
+        status_bit = accel.events["motion"]
+    finally:
+        accel.disable_motion_detection()
+        accel.map_interrupt(1, set())
+    ok = pin_asserted and status_bit
+    return _report("motion interrupt (INT1)", ok, f"pin_asserted={pin_asserted} status_bit={status_bit}")
+
+
+def check_inactivity_interrupt(accel: ADXL367, int2_pin: "DigitalInOut") -> bool:
+    """Hold the board completely still when prompted.
+
+    Confirms inactivity detection end to end via the physical INT2 pin, mirroring
+    `check_motion_interrupt`. Uses referenced detection for the same reason: absolute
+    inactivity requires *every* axis to read below threshold, which the gravity-aligned
+    axis never does, so it could never trigger regardless of actual stillness.
+    """
+    print("Set the board down and hold it still...")
+    time.sleep(_INACTIVITY_SETTLE_S)
+    accel.map_interrupt(2, {"inactivity"})
+    accel.enable_inactivity_detection(threshold=50, time_=_INACTIVITY_TIME_S, referenced=True)
+    try:
+        print(f"KEEP HOLDING STILL - waiting up to {_INACTIVITY_WAIT_TIMEOUT_S:.0f}s...")
+        pin_asserted = _wait_for_pin(int2_pin, _INACTIVITY_WAIT_TIMEOUT_S)
+        status_bit = accel.events["inactivity"]
+    finally:
+        accel.disable_inactivity_detection()
+        accel.map_interrupt(2, set())
+    ok = pin_asserted and status_bit
+    return _report("inactivity interrupt (INT2)", ok, f"pin_asserted={pin_asserted} status_bit={status_bit}")
+
+
+def run_interactive(accel: ADXL367, int1_pin: "DigitalInOut", int2_pin: "DigitalInOut") -> bool:
+    """Run the checks that require physically handling the board, in sequence.
+
+    Returns True only if both passed. Requires INT1/INT2 wired to GPIOs, unlike
+    everything in `run_all()`.
+    """
+    results = [
+        check_motion_interrupt(accel, int1_pin),
+        check_inactivity_interrupt(accel, int2_pin),
+    ]
+    print(f"\n{sum(results)}/{len(results)} interactive checks passed")
+    return all(results)

@@ -1,10 +1,12 @@
 """CircuitPython driver for the Analog Devices ADXL366/ADXL367 accelerometers."""
 
 import time
-from typing import TYPE_CHECKING
 
-from adafruit_bus_device.i2c_device import I2CDevice
-from adafruit_bus_device.spi_device import SPIDevice
+try:
+    from typing import TYPE_CHECKING
+except ImportError:
+    TYPE_CHECKING = False  # ty: ignore[invalid-assignment]
+
 from micropython import const
 
 if TYPE_CHECKING:
@@ -136,12 +138,20 @@ _ACT_INACT_CTL_REF_READBACK_MASK = const(0xC0)
 _ACTIVITY_ENABLE = const(0x01)
 _REFERENCED_ACTIVITY_ENABLE = const(0x03)
 _THRESHOLD_MAX = const(0x1FFF)
+_TIME_ACT_MAX_SAMPLES = const(0xFF)
+_TIME_INACT_MAX_SAMPLES = const(0xFFFF)
 
 # -- SELF_TEST (0x2E) --
 _SELF_TEST_ST = const(0x01)
 _SELF_TEST_ST_FORCE = const(0x02)
-_SELF_TEST_MIN = const(360)  # 90 * 100 / 25
-_SELF_TEST_MAX = const(1080)  # 270 * 100 / 25
+# Output Change spec (Table 1): 133mg min, 222mg max, measured on XOUT. Converted to raw
+# LSB codes at the +/-2g range's 0.25mg/LSB sensitivity, since self-test is only accurate
+# in that range (datasheet's "Using Self Test" section) - confirmed against real hardware
+# that the previously-coded 90mg/270mg bounds here didn't match the datasheet at all.
+_SELF_TEST_MIN = const(532)  # 133 / 0.25
+_SELF_TEST_MAX = const(888)  # 222 / 0.25
+_SELF_TEST_SETTLE_S = 0.1  # settle time after entering measurement mode, before ST sequence
+_SELF_TEST_SAMPLE_COUNT = const(8)  # datasheet recommends averaging 4-16 samples per side
 
 # -- TEMP_CTL (0x3D) / ADC_CTL (0x3C) --
 _TEMP_CTL_EN = const(0x01)
@@ -235,77 +245,90 @@ def _decode_s14(msb: int, lsb: int) -> int:
 # -- bus transport --
 
 
-class _I2CDevice(I2CDevice):
-    """`I2CDevice` with a correctly-typed `__exit__`.
+class I2CBus:
+    """Register-level access to a device over I2C.
 
-    `adafruit_bus_device-stubs` declares `__exit__(self) -> None` (zero
-    args), which doesn't match the real 3-argument context-manager protocol
-    and makes every `with I2CDevice(...) as ...:` a type error. The real
-    `__exit__` only unlocks the bus and always returns a falsy value, so we
-    reimplement it directly here instead of delegating to the mistyped
-    parent method.
+    Talks to `busio.I2C` directly rather than going through
+    `adafruit_bus_device.I2CDevice`. Confirmed against real ADXL366 hardware:
+    subclassing `I2CDevice` (even trivially, only to fix its mistyped
+    `__exit__`) broke bus locking outright on that board's CircuitPython
+    build - `self.i2c` came back as an unrelated int inside inherited
+    `__enter__`, even though the identical operation worked fine through an
+    unmodified `I2CDevice` instance. `busio.I2C`'s own locking/transfer
+    methods carry no such risk and need no wrapper class at all.
     """
 
-    i2c: "I2C"
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.i2c.unlock()
-
-
-class I2CBus:
-    """Register-level access to a device over I2C."""
-
     def __init__(self, i2c_bus: "I2C", address: int) -> None:
-        self._device = _I2CDevice(i2c_bus, address)
+        self._i2c = i2c_bus
+        self._address = address
+
+    def _lock(self) -> None:
+        while not self._i2c.try_lock():
+            pass
 
     def read_into(self, register: int, buffer: bytearray) -> None:
-        with self._device as i2c:
-            i2c.write_then_readinto(bytes((register,)), buffer)
+        self._lock()
+        try:
+            self._i2c.writeto_then_readfrom(self._address, bytes((register,)), buffer)
+        finally:
+            self._i2c.unlock()
 
     def write(self, register: int, value: int) -> None:
-        with self._device as i2c:
-            i2c.write(bytes((register, value & 0xFF)))
+        self._lock()
+        try:
+            self._i2c.writeto(self._address, bytes((register, value & 0xFF)))
+        finally:
+            self._i2c.unlock()
 
     def read_fifo_into(self, buffer: bytearray) -> None:
-        with self._device as i2c:
-            i2c.write_then_readinto(bytes((_REG_I2C_FIFO_DATA,)), buffer)
-
-
-class _SPIDevice(SPIDevice):
-    """`SPIDevice` with a correctly-typed `__exit__`. See `_I2CDevice`."""
-
-    spi: "SPI"
-    chip_select: "DigitalInOut | None"
-    cs_active_value: bool
-
-    def __exit__(self, *exc_info: object) -> None:
-        # extra_clocks handling is intentionally omitted: we never construct
-        # this with a nonzero extra_clocks, so upstream's post-CS clock-out
-        # step would always be a no-op here.
-        if self.chip_select:
-            self.chip_select.value = not self.cs_active_value
-        self.spi.unlock()
+        self._lock()
+        try:
+            self._i2c.writeto_then_readfrom(self._address, bytes((_REG_I2C_FIFO_DATA,)), buffer)
+        finally:
+            self._i2c.unlock()
 
 
 class _SPIBus:
-    """Register-level access to a device over SPI."""
+    """Register-level access to a device over SPI. See `I2CBus`."""
 
     def __init__(self, spi_bus: "SPI", cs: "DigitalInOut", *, baudrate: int) -> None:
-        self._device = _SPIDevice(spi_bus, cs, baudrate=baudrate, polarity=0, phase=0)
+        self._spi = spi_bus
+        self._cs = cs
+        self._baudrate = baudrate
+        self._cs.switch_to_output(value=True)  # idle high; CS is active low
+
+    def _lock(self) -> None:
+        while not self._spi.try_lock():
+            pass
+        self._spi.configure(baudrate=self._baudrate, polarity=0, phase=0)
+        self._cs.value = False
+
+    def _unlock(self) -> None:
+        self._cs.value = True
+        self._spi.unlock()
 
     def read_into(self, register: int, buffer: bytearray) -> None:
-        with self._device as spi:
-            spi.write(bytes((_SPI_READ_REG, register)))
-            spi.readinto(buffer)
+        self._lock()
+        try:
+            self._spi.write(bytes((_SPI_READ_REG, register)))
+            self._spi.readinto(buffer)
+        finally:
+            self._unlock()
 
     def write(self, register: int, value: int) -> None:
-        with self._device as spi:
-            spi.write(bytes((_SPI_WRITE_REG, register, value & 0xFF)))
+        self._lock()
+        try:
+            self._spi.write(bytes((_SPI_WRITE_REG, register, value & 0xFF)))
+        finally:
+            self._unlock()
 
     def read_fifo_into(self, buffer: bytearray) -> None:
-        with self._device as spi:
-            spi.write(bytes((_SPI_READ_FIFO,)))
-            spi.readinto(buffer)
+        self._lock()
+        try:
+            self._spi.write(bytes((_SPI_READ_FIFO,)))
+            self._spi.readinto(buffer)
+        finally:
+            self._unlock()
 
 
 class ADXL367:
@@ -375,8 +398,18 @@ class ADXL367:
     # -- initialization --
 
     def reset(self) -> None:
-        """Perform a software reset, returning all registers to power-on defaults."""
-        self._write_u8(_REG_SOFT_RESET, _RESET_KEY)
+        """Perform a software reset, returning all registers to power-on defaults.
+
+        The reset-key write commonly raises `OSError` on real hardware: the device
+        starts resetting its own I2C peripheral logic mid-transaction, which cuts the
+        bus transaction off from the controller's point of view even though the reset
+        itself lands correctly. Confirmed against real ADXL366 hardware - the device is
+        alive and reports correct ID bytes immediately after this "failed" write.
+        """
+        try:  # noqa: SIM105 - contextlib isn't a guaranteed-present CircuitPython core module
+            self._write_u8(_REG_SOFT_RESET, _RESET_KEY)
+        except OSError:
+            pass
         time.sleep(0.02)
 
     def _initialize(self) -> None:
@@ -507,11 +540,21 @@ class ADXL367:
 
     # -- activity/inactivity detection --
 
+    def _seconds_to_samples(self, time_seconds: float, max_samples: int) -> int:
+        """Convert a duration in seconds to the raw consecutive-sample count these
+        timer registers actually store (samples = time x ODR, confirmed against the
+        datasheet's free-fall TIME_INACT equation and its "1 sample to 20sec of
+        motion" figure for TIME_ACT, which lines up with 0xFF samples at the slowest
+        12.5Hz ODR).
+        """
+        samples = round(time_seconds * _DATA_RATE_HZ[self._data_rate])
+        return min(max(samples, 0), max_samples)
+
     def enable_motion_detection(
         self,
         *,
         threshold: int = 100,
-        time_: int = 1,
+        time_: float = 1,
         referenced: bool = False,
     ) -> None:
         """Enable activity (motion) detection.
@@ -519,11 +562,12 @@ class ADXL367:
         `threshold` is a raw accelerometer-code magnitude (same units as
         `raw_acceleration`, i.e. scaled by `range`) rather than the ADXL34x's
         fixed 62.5 mg/LSB - the exact mg/LSB figure for this threshold field
-        is not confirmed against the datasheet. `time_` is in seconds
-        (unconfirmed exact LSB scale; treat as approximate).
+        is not confirmed against the datasheet. `time_` is in seconds, converted to
+        TIME_ACT's raw sample count using the current `data_rate`.
         """
         self._set_threshold(_REG_THRESH_ACT_H, _REG_THRESH_ACT_L, threshold)
-        self._write_u8(_REG_TIME_ACT, time_ & 0xFF)
+        samples = self._seconds_to_samples(time_, _TIME_ACT_MAX_SAMPLES)
+        self._write_u8(_REG_TIME_ACT, samples)
         mode = _REFERENCED_ACTIVITY_ENABLE if referenced else _ACTIVITY_ENABLE
         self._write_masked(_REG_ACT_INACT_CTL, mode, _ACT_INACT_CTL_ACT_MASK)
 
@@ -535,16 +579,32 @@ class ADXL367:
         self,
         *,
         threshold: int = 50,
-        time_: int = 3,
+        time_: float = 3,
         referenced: bool = False,
     ) -> None:
         """Enable inactivity detection.
 
-        See `enable_motion_detection` for unit caveats.
+        See `enable_motion_detection` for the `time_` conversion. When `referenced=True`,
+        this first bootstraps the reference with a throwaway absolute-mode configuration
+        at the maximum threshold - guaranteed to trigger a real inactivity event
+        regardless of orientation - before applying the requested configuration.
+        Confirmed against real hardware: simply enabling referenced inactivity, even
+        immediately after a fresh measurement-mode transition, never actually latches a
+        reference on its own. Only an actual inactivity event does (the datasheet's
+        other documented trigger for recalculating the reference), so one has to be
+        manufactured first.
         """
+        if referenced:
+            self._set_threshold(_REG_THRESH_INACT_H, _REG_THRESH_INACT_L, _THRESHOLD_MAX)
+            self._write_u8(_REG_TIME_INACT_H, 0)
+            self._write_u8(_REG_TIME_INACT_L, 1)
+            bootstrap = _ACTIVITY_ENABLE << _ACT_INACT_CTL_INACT_SHIFT
+            self._write_masked(_REG_ACT_INACT_CTL, bootstrap, _ACT_INACT_CTL_INACT_MASK)
+            time.sleep(4.0 / _DATA_RATE_HZ[self._data_rate])
         self._set_threshold(_REG_THRESH_INACT_H, _REG_THRESH_INACT_L, threshold)
-        self._write_u8(_REG_TIME_INACT_H, (time_ >> 8) & 0xFF)
-        self._write_u8(_REG_TIME_INACT_L, time_ & 0xFF)
+        samples = self._seconds_to_samples(time_, _TIME_INACT_MAX_SAMPLES)
+        self._write_u8(_REG_TIME_INACT_H, (samples >> 8) & 0xFF)
+        self._write_u8(_REG_TIME_INACT_L, samples & 0xFF)
         mode = _REFERENCED_ACTIVITY_ENABLE if referenced else _ACTIVITY_ENABLE
         shifted = mode << _ACT_INACT_CTL_INACT_SHIFT
         self._write_masked(_REG_ACT_INACT_CTL, shifted, _ACT_INACT_CTL_INACT_MASK)
@@ -669,19 +729,34 @@ class ADXL367:
 
     # -- self-test --
 
+    def _average_raw_x(self, count: int, sample_period: float) -> float:
+        total = 0
+        for _ in range(count):
+            total += self.raw_x
+            time.sleep(sample_period)
+        return total / count
+
     def self_test(self) -> bool:
-        """Run the built-in electrostatic self-test. Returns True if it passes."""
+        """Run the built-in electrostatic self-test. Returns True if it passes.
+
+        Follows the datasheet's "Using Self Test" procedure: settle after entering
+        measurement mode, then average several x-axis samples before and after
+        asserting the self-test force, since a single sample is noise-sensitive enough
+        to produce false failures.
+        """
         previous_mode = self.power_mode
         self.power_mode = OpMode.MEASURE
-        delay = 4.0 / _DATA_RATE_HZ[self._data_rate]
+        time.sleep(_SELF_TEST_SETTLE_S)
+        sample_period = 1.0 / _DATA_RATE_HZ[self._data_rate]
+        settle_delay = 4.0 * sample_period
         both_bits = _SELF_TEST_ST | _SELF_TEST_ST_FORCE
         try:
             self._write_masked(_REG_SELF_TEST, _SELF_TEST_ST, both_bits)
-            time.sleep(delay)
-            before = self.raw_x
+            time.sleep(settle_delay)
+            before = self._average_raw_x(_SELF_TEST_SAMPLE_COUNT, sample_period)
             self._write_masked(_REG_SELF_TEST, both_bits, both_bits)
-            time.sleep(delay)
-            after = self.raw_x
+            time.sleep(settle_delay)
+            after = self._average_raw_x(_SELF_TEST_SAMPLE_COUNT, sample_period)
         finally:
             self._write_u8(_REG_SELF_TEST, 0)
             self.power_mode = previous_mode

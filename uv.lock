@@ -222,12 +222,12 @@ name = "circuitpython-adxl36x"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "adafruit-circuitpython-busdevice" },
     { name = "circuitpython-stubs" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "adafruit-blinka" },
     { name = "circup" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -236,13 +236,11 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "adafruit-circuitpython-busdevice", specifier = ">=5.2.11" },
-    { name = "circuitpython-stubs", specifier = ">=10.2.1" },
-]
+requires-dist = [{ name = "circuitpython-stubs", specifier = ">=10.2.1" }]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "adafruit-blinka", specifier = ">=8.0.0" },
     { name = "circup", specifier = ">=1.9.0" },
     { name = "pre-commit", specifier = ">=3.5.0" },
     { name = "pytest", specifier = ">=8.4.0" },

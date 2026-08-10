@@ -32,8 +32,8 @@ register-compatible — only the driver's Python API shape is shared. Notable di
 
 ## Installation
 
-On a CircuitPython board, copy `src/adxl36x/` into `CIRCUITPY/lib/adxl36x/`, along with the `adafruit_bus_device` bundle
-library.
+On a CircuitPython board, copy `src/adxl36x/` into `CIRCUITPY/lib/adxl36x/`. No other bundle libraries are required -
+this driver talks to `busio.I2C`/`busio.SPI` directly.
 
 For host-side development (type checking, tests) in another project:
 

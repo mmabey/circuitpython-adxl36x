@@ -29,7 +29,6 @@ classifiers = [
     "Topic :: System :: Hardware",
 ]
 dependencies = [
-    "adafruit-circuitpython-busdevice>=5.2.11",
     "circuitpython-stubs>=10.2.1",
 ]
 
@@ -40,6 +39,7 @@ Issues = "https://github.com/mmabey/circuitpython-adxl36x/issues"
 
 [dependency-groups]
 dev = [
+    "adafruit-blinka>=8.0.0",
     "circup>=1.9.0",
     "pre-commit>=3.5.0",
     "pytest>=8.4.0",
@@ -106,3 +106,4 @@ extend-select = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "INP001", "PLR2004", "PLR0913"]
+"examples/**" = ["INP001", "PLR2004"]

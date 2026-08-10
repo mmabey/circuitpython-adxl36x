@@ -6,15 +6,25 @@ import pytest
 from conftest import FakeDigitalInOut, FakeI2C, FakeSPI, new_adxl366, new_adxl366_spi, new_adxl367
 
 from adxl36x import (
+    _ACT_INACT_CTL_INACT_SHIFT,
+    _ACTIVITY_ENABLE,
+    _REFERENCED_ACTIVITY_ENABLE,
+    _REG_ACT_INACT_CTL,
     _REG_FIFO_ENTRIES_H,
     _REG_FIFO_ENTRIES_L,
     _REG_FILTER_CTL,
     _REG_INTMAP1_LWR,
     _REG_INTMAP1_UPPER,
     _REG_STATUS,
+    _REG_THRESH_INACT_H,
+    _REG_TIME_ACT,
+    _REG_TIME_INACT_H,
+    _REG_TIME_INACT_L,
     _REG_XDATA_H,
     _REVID_ADXL366,
     _REVID_ADXL367,
+    _SELF_TEST_SAMPLE_COUNT,
+    _THRESHOLD_MAX,
     ADXL366,
     DataRate,
     FIFOFormat,
@@ -54,6 +64,17 @@ def test_adxl367_rejects_adxl366_revid() -> None:
     fake = FakeI2C(revid=_REVID_ADXL366)
     with pytest.raises(RuntimeError):
         new_adxl367(fake)
+
+
+def test_init_survives_expected_oserror_on_reset_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Confirmed against real ADXL366 hardware: the reset-key write commonly raises
+    OSError because the device starts resetting its own I2C logic mid-transaction, even
+    though the reset itself lands correctly. Construction must not fail because of it.
+    """
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    fake = FakeI2C(raise_oserror_on_reset=True)
+    device = new_adxl366(fake)
+    assert device.power_mode == OpMode.MEASURE
 
 
 def test_from_spi_construction() -> None:
@@ -145,6 +166,61 @@ def test_enable_motion_detection_rejects_large_threshold(adxl366: ADXL366) -> No
         adxl366.enable_motion_detection(threshold=0x2000)
 
 
+def test_enable_motion_detection_converts_seconds_to_samples(
+    adxl366: ADXL366,
+    fake_i2c: FakeI2C,
+) -> None:
+    adxl366.data_rate = DataRate.RATE_100_HZ
+    adxl366.enable_motion_detection(time_=2)
+    assert fake_i2c.registers[_REG_TIME_ACT] == 200
+
+
+def test_enable_inactivity_detection_converts_seconds_to_samples(
+    adxl366: ADXL366,
+    fake_i2c: FakeI2C,
+) -> None:
+    adxl366.data_rate = DataRate.RATE_100_HZ
+    adxl366.enable_inactivity_detection(time_=3)
+    samples = (fake_i2c.registers[_REG_TIME_INACT_H] << 8) | fake_i2c.registers[_REG_TIME_INACT_L]
+    assert samples == 300
+
+
+def test_enable_inactivity_detection_referenced_bootstraps_first(
+    adxl366: ADXL366,
+    fake_i2c: FakeI2C,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Confirmed against real ADXL366 hardware: referenced inactivity never latches a
+    reference just from being enabled, even right after a fresh measurement-mode
+    transition - only an actual inactivity event does. So this must manufacture one
+    first, via a throwaway absolute/max-threshold configuration, before applying the
+    requested one.
+    """
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    adxl366.data_rate = DataRate.RATE_100_HZ
+    adxl366.enable_inactivity_detection(threshold=50, time_=3, referenced=True)
+
+    act_inact_writes = [value for register, value in fake_i2c.writes if register == _REG_ACT_INACT_CTL]
+    assert len(act_inact_writes) == 2
+    bootstrap_value, real_value = act_inact_writes
+    assert bootstrap_value == _ACTIVITY_ENABLE << _ACT_INACT_CTL_INACT_SHIFT
+    assert real_value == _REFERENCED_ACTIVITY_ENABLE << _ACT_INACT_CTL_INACT_SHIFT
+
+    # Final register state reflects the requested threshold/time, not the bootstrap's.
+    assert fake_i2c.registers[_REG_THRESH_INACT_H] != (_THRESHOLD_MAX >> 6) & 0x7F
+    samples = (fake_i2c.registers[_REG_TIME_INACT_H] << 8) | fake_i2c.registers[_REG_TIME_INACT_L]
+    assert samples == 300
+
+
+def test_enable_inactivity_detection_absolute_skips_bootstrap(
+    adxl366: ADXL366,
+    fake_i2c: FakeI2C,
+) -> None:
+    adxl366.enable_inactivity_detection(threshold=50, time_=2, referenced=False)
+    act_inact_writes = [value for register, value in fake_i2c.writes if register == _REG_ACT_INACT_CTL]
+    assert len(act_inact_writes) == 1
+
+
 # -- events --
 
 
@@ -229,7 +305,7 @@ def test_self_test_passes_within_expected_delta(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    readings = iter([0, 500])
+    readings = iter([0] * _SELF_TEST_SAMPLE_COUNT + [700] * _SELF_TEST_SAMPLE_COUNT)
     monkeypatch.setattr(type(adxl366), "raw_x", property(lambda _self: next(readings)))
     assert adxl366.self_test() is True
 
@@ -239,7 +315,7 @@ def test_self_test_fails_outside_expected_delta(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    readings = iter([0, 1])
+    readings = iter([0] * _SELF_TEST_SAMPLE_COUNT + [100] * _SELF_TEST_SAMPLE_COUNT)
     monkeypatch.setattr(type(adxl366), "raw_x", property(lambda _self: next(readings)))
     assert adxl366.self_test() is False
 
