@@ -100,6 +100,11 @@ class OpMode:
 # -- TIMER_CTL (0x39) --
 _TIMER_CTL_WAKEUP_RATE_MASK = const(0xC0)
 _TIMER_CTL_WAKEUP_RATE_SHIFT = const(6)
+_TIMER_CTL_KEEP_ALIVE_MASK = const(0x1F)
+# Datasheet documents raw codes 0 (off) through 20 (23.2 hours), each code doubling the
+# previous starting from a 160ms base at code 1; codes above 20 are unspecified.
+_KEEP_ALIVE_BASE_SECONDS = 0.16
+_KEEP_ALIVE_MAX_CODE = const(20)
 
 
 class WakeupRate:
@@ -605,6 +610,38 @@ class ADXL367:
             value << _TIMER_CTL_WAKEUP_RATE_SHIFT,
             _TIMER_CTL_WAKEUP_RATE_MASK,
         )
+
+    @property
+    def keep_alive_timer(self) -> "float | None":
+        """Keep-alive timer period in seconds, or `None` if it's off (TIMER_CTL bits[4:0]).
+
+        When it expires, `.events["keep_alive_timer"]` (STATUS_2 bit 4) is set and stays
+        set until STATUS_2 is read - can also be routed to INT1/INT2 via `map_interrupt`.
+        """
+        raw = self._read_u8(_REG_TIMER_CTL) & _TIMER_CTL_KEEP_ALIVE_MASK
+        if raw == 0:
+            return None
+        return _KEEP_ALIVE_BASE_SECONDS * (2 ** (raw - 1))
+
+    @keep_alive_timer.setter
+    def keep_alive_timer(self, period_seconds: "float | None") -> None:
+        if period_seconds is None:
+            self._write_masked(_REG_TIMER_CTL, 0, _TIMER_CTL_KEEP_ALIVE_MASK)
+            return
+        if period_seconds <= 0:
+            msg = f"period_seconds must be positive, or None to disable, got {period_seconds!r}"
+            raise ValueError(msg)
+        # Valid periods are a fixed doubling sequence (20 values) - not worth pulling in
+        # math.log2 for this, and CircuitPython builds aren't guaranteed to have it (this
+        # ESP32 build doesn't).
+        code = 1
+        best_diff = abs(_KEEP_ALIVE_BASE_SECONDS - period_seconds)
+        for candidate in range(2, _KEEP_ALIVE_MAX_CODE + 1):
+            diff = abs(_KEEP_ALIVE_BASE_SECONDS * (2 ** (candidate - 1)) - period_seconds)
+            if diff < best_diff:
+                best_diff = diff
+                code = candidate
+        self._write_masked(_REG_TIMER_CTL, code, _TIMER_CTL_KEEP_ALIVE_MASK)
 
     @property
     def g_range(self) -> int:

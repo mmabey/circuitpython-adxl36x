@@ -138,6 +138,46 @@ def test_autosleep_roundtrip(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
     assert adxl366.autosleep is False
 
 
+def test_keep_alive_timer_defaults_to_off(adxl366: ADXL366) -> None:
+    assert adxl366.keep_alive_timer is None
+
+
+def test_keep_alive_timer_roundtrip_and_register_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.keep_alive_timer = 0.16
+    assert adxl366.keep_alive_timer == pytest.approx(0.16)
+    assert fake_i2c.registers[0x39] & 0x1F == 1
+
+    adxl366.keep_alive_timer = 1.28
+    assert adxl366.keep_alive_timer == pytest.approx(1.28)
+    assert fake_i2c.registers[0x39] & 0x1F == 4
+
+
+def test_keep_alive_timer_none_disables(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.keep_alive_timer = 1.28
+    adxl366.keep_alive_timer = None
+    assert adxl366.keep_alive_timer is None
+    assert fake_i2c.registers[0x39] & 0x1F == 0
+
+
+def test_keep_alive_timer_clamps_to_max_code(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.keep_alive_timer = 1_000_000
+    assert fake_i2c.registers[0x39] & 0x1F == 20
+
+
+def test_keep_alive_timer_rejects_non_positive(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="period_seconds"):
+        adxl366.keep_alive_timer = 0
+
+    with pytest.raises(ValueError, match="period_seconds"):
+        adxl366.keep_alive_timer = -1
+
+
+def test_keep_alive_timer_preserves_wakeup_rate_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.wakeup_rate = WakeupRate.RATE_3_SPS
+    adxl366.keep_alive_timer = 1.28
+    assert adxl366.wakeup_rate == WakeupRate.RATE_3_SPS
+
+
 # -- acceleration decode/scale --
 
 

@@ -45,6 +45,10 @@ _WAKEUP_MIN_INTERVAL_S = 0.2  # comfortably below RATE_3_SPS's ~320ms, above nor
 _WAKEUP_SAMPLE_COUNT = 3
 _WAKEUP_TEST_TIMEOUT_S = 5.0
 _WAKEUP_POLL_INTERVAL_S = 0.02
+_KEEP_ALIVE_TEST_PERIOD_S = 0.16  # shortest documented period (raw code 1)
+_KEEP_ALIVE_TIMEOUT_S = 2.0
+_KEEP_ALIVE_POLL_INTERVAL_S = 0.02
+_KEEP_ALIVE_MIN_ELAPSED_S = 0.1  # comfortably below the 160ms period, catches "fires instantly"
 
 
 def _report(name: str, passed: bool, detail: str = "") -> bool:
@@ -115,6 +119,28 @@ def check_axis_masking(accel: ADXL367) -> bool:
     ok = tap_axis_ok and blocked_axes_ok
     detail = f"tap_axis={tap_axis_ok} blocked_axes={blocked_axes_ok}"
     return _report("axis masking (tap_axis + blocked_axes)", ok, detail)
+
+
+def check_keep_alive_timer(accel: ADXL367) -> bool:
+    """Confirm the timer actually times the requested period, not just that the
+    register/event-bit roundtrip correctly (already covered by host tests).
+    """
+    accel.keep_alive_timer = _KEEP_ALIVE_TEST_PERIOD_S
+    start = time.monotonic()
+    try:
+        fired = False
+        deadline = start + _KEEP_ALIVE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if accel.events["keep_alive_timer"]:
+                fired = True
+                break
+            time.sleep(_KEEP_ALIVE_POLL_INTERVAL_S)
+        elapsed = time.monotonic() - start
+    finally:
+        accel.keep_alive_timer = None
+    ok = fired and elapsed > _KEEP_ALIVE_MIN_ELAPSED_S
+    detail = f"fired={fired} elapsed={elapsed:.3f}s (requested {_KEEP_ALIVE_TEST_PERIOD_S}s)"
+    return _report("keep-alive timer", ok, detail)
 
 
 def check_temperature(accel: ADXL367) -> bool:
@@ -217,6 +243,7 @@ def run_all(accel: ADXL367) -> bool:
         check_at_rest_gravity,
         check_fifo,
         check_wakeup_mode,
+        check_keep_alive_timer,
     )
     results = [check(accel) for check in checks]
     if isinstance(accel, ADXL366):
