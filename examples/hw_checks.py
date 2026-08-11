@@ -35,6 +35,9 @@ _FIFO_SAMPLE_SETS = 30
 _FIFO_FILL_WAIT_S = 0.5
 _FIFO_RAW_MAGNITUDE_MIN = 500  # comfortably above noise floor / stuck-at-zero
 _FIFO_RAW_MAGNITUDE_MAX = 8191  # full-scale 14-bit signed magnitude ceiling
+_PEDOMETER_TAP_TARGET = 5
+_PEDOMETER_WAIT_TIMEOUT_S = 20.0
+_PEDOMETER_POLL_INTERVAL_S = 0.5
 
 
 def _report(name: str, passed: bool, detail: str = "") -> bool:
@@ -205,15 +208,42 @@ def check_inactivity_interrupt(accel: ADXL367, int2_pin: "DigitalInOut") -> bool
     return _report("inactivity interrupt (INT2)", ok, f"pin_asserted={pin_asserted} status_bit={status_bit}")
 
 
+def check_pedometer(accel: ADXL366) -> bool:
+    """ADXL366-only: tap/shake the board repeatedly and confirm `accel.steps` climbs.
+
+    Unlike the motion/inactivity checks, the pedometer isn't wired to an interrupt pin -
+    it's a free-running counter register - so this just enables it, resets the count, and
+    polls `steps` directly instead of waiting on a `DigitalInOut`.
+    """
+    accel.pedometer_enabled = True
+    accel.reset_steps()
+    steps = 0
+    try:
+        print(
+            f"TAP OR SHAKE THE BOARD REPEATEDLY (~{_PEDOMETER_TAP_TARGET} times) - "
+            f"waiting up to {_PEDOMETER_WAIT_TIMEOUT_S:.0f}s...",
+        )
+        deadline = time.monotonic() + _PEDOMETER_WAIT_TIMEOUT_S
+        while time.monotonic() < deadline and steps < _PEDOMETER_TAP_TARGET:
+            time.sleep(_PEDOMETER_POLL_INTERVAL_S)
+            steps = accel.steps
+    finally:
+        accel.pedometer_enabled = False
+    ok = steps >= _PEDOMETER_TAP_TARGET
+    return _report("pedometer step count", ok, f"steps={steps}")
+
+
 def run_interactive(accel: ADXL367, int1_pin: "DigitalInOut", int2_pin: "DigitalInOut") -> bool:
     """Run the checks that require physically handling the board, in sequence.
 
-    Returns True only if both passed. Requires INT1/INT2 wired to GPIOs, unlike
+    Returns True only if all of them passed. Requires INT1/INT2 wired to GPIOs, unlike
     everything in `run_all()`.
     """
     results = [
         check_motion_interrupt(accel, int1_pin),
         check_inactivity_interrupt(accel, int2_pin),
     ]
+    if isinstance(accel, ADXL366):
+        results.append(check_pedometer(accel))
     print(f"\n{sum(results)}/{len(results)} interactive checks passed")
     return all(results)
