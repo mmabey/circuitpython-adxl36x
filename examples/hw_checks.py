@@ -15,7 +15,7 @@ try:
 except ImportError:
     TYPE_CHECKING = False  # ty: ignore[invalid-assignment]
 
-from adxl36x import ADXL367, DataRate, Range
+from adxl36x import ADXL366, ADXL367, DataRate, FIFOFormat, FIFOMode, Range
 
 if TYPE_CHECKING:
     from digitalio import DigitalInOut
@@ -31,6 +31,10 @@ _POLL_INTERVAL_S = 0.05
 _REFERENCE_SETTLE_S = 1.0
 _INACTIVITY_SETTLE_S = 3.0
 _MOTION_THRESHOLD = 300
+_FIFO_SAMPLE_SETS = 30
+_FIFO_FILL_WAIT_S = 0.5
+_FIFO_RAW_MAGNITUDE_MIN = 500  # comfortably above noise floor / stuck-at-zero
+_FIFO_RAW_MAGNITUDE_MAX = 8191  # full-scale 14-bit signed magnitude ceiling
 
 
 def _report(name: str, passed: bool, detail: str = "") -> bool:
@@ -93,6 +97,40 @@ def check_at_rest_gravity(accel: ADXL367) -> bool:
     return _report("at-rest gravity", ok, detail)
 
 
+def check_fifo(accel: ADXL367) -> bool:
+    """Configure FIFO stream mode, let it fill briefly, and confirm entries decode to
+    plausible x/y/z channel tags and magnitudes. No physical interaction needed.
+    """
+    accel.configure_fifo(mode=FIFOMode.STREAM, fifo_format=FIFOFormat.XYZ, sample_sets=_FIFO_SAMPLE_SETS)
+    time.sleep(_FIFO_FILL_WAIT_S)
+    entries = accel.fifo_entries
+    samples = accel.read_fifo() if entries else []
+    accel.configure_fifo(mode=FIFOMode.DISABLED)
+
+    channels_ok = bool(samples) and all(channel in ("x", "y", "z") for channel, _ in samples)
+    complete_sets = len(samples) % 3 == 0
+    magnitude = None
+    magnitude_ok = False
+    if channels_ok and complete_sets and samples:
+        x, y, z = (value for _, value in samples[:3])
+        magnitude = (x**2 + y**2 + z**2) ** 0.5
+        magnitude_ok = _FIFO_RAW_MAGNITUDE_MIN <= magnitude <= _FIFO_RAW_MAGNITUDE_MAX
+
+    ok = entries > 0 and channels_ok and complete_sets and magnitude_ok
+    detail = f"entries={entries} samples={len(samples)} first_triple_magnitude={magnitude}"
+    return _report("FIFO streaming", ok, detail)
+
+
+def check_z_nonlinearity_compensation(accel: ADXL366) -> bool:
+    """ADXL366-only: verify the Z-axis nonlinearity compensation flag roundtrips."""
+    original = accel.z_nonlinearity_compensation
+    accel.z_nonlinearity_compensation = not original
+    toggled = accel.z_nonlinearity_compensation == (not original)
+    accel.z_nonlinearity_compensation = original
+    restored = accel.z_nonlinearity_compensation == original
+    return _report("z_nonlinearity_compensation roundtrip", toggled and restored, f"restored to {original}")
+
+
 def run_all(accel: ADXL367) -> bool:
     """Run every non-interactive check in sequence. Returns True only if all of them passed."""
     checks = (
@@ -102,8 +140,11 @@ def run_all(accel: ADXL367) -> bool:
         check_temperature,
         check_self_test,
         check_at_rest_gravity,
+        check_fifo,
     )
     results = [check(accel) for check in checks]
+    if isinstance(accel, ADXL366):
+        results.append(check_z_nonlinearity_compensation(accel))
     print(f"\n{sum(results)}/{len(results)} checks passed")
     return all(results)
 
