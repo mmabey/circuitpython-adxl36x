@@ -93,14 +93,18 @@ The `examples/hw_*.py` scripts and `examples/hw_checks.py` exercise real silicon
 `doit_esp32_devkit_v1` board wired to an [EVAL-ADXL366Z](https://www.analog.com/en/resources/evaluation-hardware-and-software/evaluation-boards-kits/eval-adxl366z.html)
 breakout, over either I2C or SPI:
 
-**I2C** (`hw_sanity_check.py` / `hw_interactive_check.py`, via `board.I2C()`):
+**I2C** (`hw_sanity_check.py` / `hw_interactive_check.py` - edit their `board.I2C()` call to
+`busio.I2C(board.D26, board.D33)` to match these pins):
 
 | Signal | GPIO |
 | ------ | ---- |
-| SDA    | 21   |
-| SCL    | 22   |
+| SDA    | 33   |
+| SCL    | 26   |
 | INT1   | 27   |
 | INT2   | 14   |
+
+The EVAL-ADXL366Z has no onboard I2C pull-ups - add external 4.7kOhm pull-ups from SDA and SCL
+to 3.3V.
 
 **SPI** (`hw_spi_sanity_check.py` / `hw_spi_interactive_check.py`):
 
