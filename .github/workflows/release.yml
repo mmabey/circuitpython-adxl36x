@@ -16,9 +16,9 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       is-new: ${{ steps.check-tag.outputs.is-new }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v9
 
       - id: version
         run: echo "version=$(uv version --short)" >> "$GITHUB_OUTPUT"
@@ -36,9 +36,9 @@ jobs:
     if: needs.check-version.outputs.is-new == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v9
         with:
           enable-cache: true
 
@@ -46,8 +46,50 @@ jobs:
 
       - run: uv run pytest
 
+  build-mpy-bundle:
+    needs: check-version
+    if: needs.check-version.outputs.is-new == 'true'
+    runs-on: ubuntu-latest
+    env:
+      # Any CircuitPython tag whose py/persistentcode.h defines MPY_VERSION as 6 works here -
+      # that's been stable since CircuitPython 9.0.0 (as of 10.3.0-alpha.4, confirmed
+      # 2026-08-11), and a non-native .mpy (no -march passed to mpy-cross, as below) only needs
+      # MPY_VERSION to match, not the exact CircuitPython release. Bump this tag only when
+      # Adafruit deliberately bumps MPY_VERSION - an infrequent, deliberate compatibility break,
+      # not something that happens on ordinary point releases.
+      CIRCUITPYTHON_TAG: "10.2.1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - name: Build mpy-cross
+        run: |
+          git clone --depth 1 --branch "$CIRCUITPYTHON_TAG" https://github.com/adafruit/circuitpython.git /tmp/circuitpython
+          pip install huffman
+          make -C /tmp/circuitpython/mpy-cross -j"$(nproc)"
+
+      - name: Compile library to .mpy
+        run: |
+          mkdir -p bundle/lib/adxl36x
+          /tmp/circuitpython/mpy-cross/build/mpy-cross \
+            -o bundle/lib/adxl36x/__init__.mpy \
+            src/adxl36x/__init__.py
+
+      - name: Zip bundle
+        run: |
+          cd bundle
+          zip -r "../circuitpython-adxl36x-${{ needs.check-version.outputs.version }}-mpy.zip" lib
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mpy-bundle
+          path: circuitpython-adxl36x-*-mpy.zip
+
   release:
-    needs: [check-version, test]
+    needs: [check-version, test, build-mpy-bundle]
     if: needs.check-version.outputs.is-new == 'true'
     runs-on: ubuntu-latest
     environment: pypi
@@ -55,20 +97,27 @@ jobs:
       contents: write # create the git tag + GitHub release
       id-token: write # PyPI trusted publishing (OIDC)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v9
         with:
           enable-cache: true
 
       - run: uv build
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: mpy-bundle
+          path: mpy-bundle/
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ needs.check-version.outputs.version }}
           generate_release_notes: true
-          files: dist/*
+          files: |
+            dist/*
+            mpy-bundle/*
