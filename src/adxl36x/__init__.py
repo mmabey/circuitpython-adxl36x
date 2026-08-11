@@ -152,12 +152,30 @@ _TEMP_SCALE_DIV = const(1_000_000_000)
 _ACT_INACT_CTL_ACT_MASK = const(0x03)
 _ACT_INACT_CTL_INACT_MASK = const(0x0C)
 _ACT_INACT_CTL_INACT_SHIFT = const(2)
+_ACT_INACT_CTL_LINKLOOP_MASK = const(0x30)
+_ACT_INACT_CTL_LINKLOOP_SHIFT = const(4)
+_ACT_INACT_CTL_LINKLOOP_DEFAULT_ALIAS = const(0x2)  # undocumented 0b10 alias for DEFAULT (0b00)
 _ACT_INACT_CTL_REF_READBACK_MASK = const(0xC0)
 _ACTIVITY_ENABLE = const(0x01)
 _REFERENCED_ACTIVITY_ENABLE = const(0x03)
 _THRESHOLD_MAX = const(0x1FFF)
 _TIME_ACT_MAX_SAMPLES = const(0xFF)
 _TIME_INACT_MAX_SAMPLES = const(0xFFFF)
+
+
+class LinkLoopMode:
+    """Values for `ADXL367.link_loop_mode` (ACT_INACT_CTL's LINKLOOP bits[5:4]).
+
+    Per the datasheet's "Linking Activity and Inactivity Detection" section, LINKED
+    and LOOPED only take effect once both activity and inactivity detection are
+    enabled (`enable_motion_detection()` and `enable_inactivity_detection()`) -
+    otherwise the device silently falls back to DEFAULT regardless of this setting.
+    """
+
+    DEFAULT = const(0x0)
+    LINKED = const(0x1)
+    LOOPED = const(0x3)
+
 
 # -- SELF_TEST (0x2E) --
 _SELF_TEST_ST = const(0x01)
@@ -512,6 +530,23 @@ class ADXL367:
         self._write_masked(_REG_POWER_CTL, value, _POWER_CTL_WAKEUP)
 
     @property
+    def autosleep(self) -> bool:
+        """Whether autosleep is enabled (POWER_CTL bit 2).
+
+        Per the datasheet's "Autosleep" section, this only takes effect while
+        `link_loop_mode` is LINKED or LOOPED - in DEFAULT mode the bit is ignored.
+        When active, the device autonomously drops into wake-up mode on inactivity
+        and returns to measurement mode on activity, without host intervention.
+        Like `wakeup_mode`, not supported in low-noise or ultra-low-noise mode.
+        """
+        return bool(self._read_u8(_REG_POWER_CTL) & _POWER_CTL_AUTOSLEEP)
+
+    @autosleep.setter
+    def autosleep(self, enable: bool) -> None:
+        value = _POWER_CTL_AUTOSLEEP if enable else 0
+        self._write_masked(_REG_POWER_CTL, value, _POWER_CTL_AUTOSLEEP)
+
+    @property
     def wakeup_rate(self) -> int:
         """The sampling rate used while `wakeup_mode` is enabled, a `WakeupRate` value."""
         return (self._read_u8(_REG_TIMER_CTL) & _TIMER_CTL_WAKEUP_RATE_MASK) >> _TIMER_CTL_WAKEUP_RATE_SHIFT
@@ -620,6 +655,23 @@ class ADXL367:
         self._write_u8(_REG_Z_OFFSET, z)
 
     # -- activity/inactivity detection --
+
+    @property
+    def link_loop_mode(self) -> int:
+        """The current `LinkLoopMode` (default, linked, or looped)."""
+        raw = (self._read_u8(_REG_ACT_INACT_CTL) & _ACT_INACT_CTL_LINKLOOP_MASK) >> _ACT_INACT_CTL_LINKLOOP_SHIFT
+        return LinkLoopMode.DEFAULT if raw == _ACT_INACT_CTL_LINKLOOP_DEFAULT_ALIAS else raw
+
+    @link_loop_mode.setter
+    def link_loop_mode(self, value: int) -> None:
+        if value not in (LinkLoopMode.DEFAULT, LinkLoopMode.LINKED, LinkLoopMode.LOOPED):
+            msg = f"invalid LinkLoopMode value: {value!r}"
+            raise ValueError(msg)
+        self._write_masked(
+            _REG_ACT_INACT_CTL,
+            value << _ACT_INACT_CTL_LINKLOOP_SHIFT,
+            _ACT_INACT_CTL_LINKLOOP_MASK,
+        )
 
     def _seconds_to_samples(self, time_seconds: float, max_samples: int) -> int:
         """Convert a duration in seconds to the raw consecutive-sample count these

@@ -6,6 +6,7 @@ import pytest
 from conftest import FakeDigitalInOut, FakeI2C, FakeSPI, new_adxl366, new_adxl366_spi, new_adxl367
 
 from adxl36x import (
+    _ACT_INACT_CTL_ACT_MASK,
     _ACT_INACT_CTL_INACT_SHIFT,
     _ACTIVITY_ENABLE,
     _REFERENCED_ACTIVITY_ENABLE,
@@ -29,6 +30,7 @@ from adxl36x import (
     DataRate,
     FIFOFormat,
     FIFOMode,
+    LinkLoopMode,
     OpMode,
     Range,
     WakeupRate,
@@ -122,6 +124,14 @@ def test_wakeup_rate_roundtrip_and_register_bits(adxl366: ADXL366, fake_i2c: Fak
 def test_wakeup_rate_setter_rejects_invalid_value(adxl366: ADXL366) -> None:
     with pytest.raises(ValueError, match="WakeupRate"):
         adxl366.wakeup_rate = 7
+
+
+def test_autosleep_roundtrip(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.autosleep = True
+    assert adxl366.autosleep is True
+    assert fake_i2c.registers[0x2D] & 0x04
+    adxl366.autosleep = False
+    assert adxl366.autosleep is False
 
 
 # -- acceleration decode/scale --
@@ -239,6 +249,39 @@ def test_enable_inactivity_detection_absolute_skips_bootstrap(
     adxl366.enable_inactivity_detection(threshold=50, time_=2, referenced=False)
     act_inact_writes = [value for register, value in fake_i2c.writes if register == _REG_ACT_INACT_CTL]
     assert len(act_inact_writes) == 1
+
+
+def test_link_loop_mode_roundtrip_and_register_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.link_loop_mode = LinkLoopMode.LOOPED
+    assert adxl366.link_loop_mode == LinkLoopMode.LOOPED
+    assert (fake_i2c.registers[_REG_ACT_INACT_CTL] >> 4) & 0x03 == LinkLoopMode.LOOPED
+
+    adxl366.link_loop_mode = LinkLoopMode.LINKED
+    assert adxl366.link_loop_mode == LinkLoopMode.LINKED
+
+    adxl366.link_loop_mode = LinkLoopMode.DEFAULT
+    assert adxl366.link_loop_mode == LinkLoopMode.DEFAULT
+
+
+def test_link_loop_mode_setter_rejects_invalid_value(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="LinkLoopMode"):
+        adxl366.link_loop_mode = 0x2
+
+
+def test_link_loop_mode_treats_undocumented_alias_as_default(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    """0b10 is an undocumented alias for DEFAULT (0b00) per the datasheet's ACT_INACT_CTL
+    table - shouldn't surface as a fourth, unnamed mode value if something else set it.
+    """
+    fake_i2c.registers[_REG_ACT_INACT_CTL] = 0x2 << 4
+    assert adxl366.link_loop_mode == LinkLoopMode.DEFAULT
+
+
+def test_link_loop_mode_preserves_other_act_inact_ctl_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.enable_motion_detection()
+    adxl366.enable_inactivity_detection()
+    adxl366.link_loop_mode = LinkLoopMode.LOOPED
+    assert fake_i2c.registers[_REG_ACT_INACT_CTL] & _ACT_INACT_CTL_ACT_MASK == _ACTIVITY_ENABLE
+    assert (fake_i2c.registers[_REG_ACT_INACT_CTL] & 0x0C) >> _ACT_INACT_CTL_INACT_SHIFT == _ACTIVITY_ENABLE
 
 
 # -- events --

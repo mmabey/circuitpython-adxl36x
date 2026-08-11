@@ -15,7 +15,7 @@ try:
 except ImportError:
     TYPE_CHECKING = False  # ty: ignore[invalid-assignment]
 
-from adxl36x import ADXL366, ADXL367, DataRate, FIFOFormat, FIFOMode, Range, WakeupRate
+from adxl36x import ADXL366, ADXL367, DataRate, FIFOFormat, FIFOMode, LinkLoopMode, Range, WakeupRate
 
 if TYPE_CHECKING:
     from digitalio import DigitalInOut
@@ -38,7 +38,7 @@ _FIFO_RAW_MAGNITUDE_MAX = 8191  # full-scale 14-bit signed magnitude ceiling
 _PEDOMETER_STEP_TARGET = 8  # datasheet: steps only certify in groups of 8+ consecutive valid steps
 _PEDOMETER_WAIT_TIMEOUT_S = 30.0
 _PEDOMETER_POLL_INTERVAL_S = 0.5
-_ORIENTATION_SETTLE_S = 3.0
+_ORIENTATION_SETTLE_S = 4.0
 _ORIENTATION_AXES = ("X", "Y", "Z")
 _TAP_WAIT_TIMEOUT_S = 10.0
 _WAKEUP_MIN_INTERVAL_S = 0.2  # comfortably below RATE_3_SPS's ~320ms, above normal-mode noise
@@ -184,7 +184,8 @@ def run_all(accel: ADXL367) -> bool:
     results = [check(accel) for check in checks]
     if isinstance(accel, ADXL366):
         results.append(check_z_nonlinearity_compensation(accel))
-    print(f"\n{sum(results)}/{len(results)} checks passed")
+    main_msg = f"{sum(results)}/{len(results)} checks passed"
+    print(f"\n{main_msg}\n{'-' * len(main_msg)}\n")
     return all(results)
 
 
@@ -192,6 +193,15 @@ def _wait_for_pin(pin: "DigitalInOut", timeout_s: float) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if pin.value:
+            return True
+        time.sleep(_POLL_INTERVAL_S)
+    return False
+
+
+def _wait_for_pin_low(pin: "DigitalInOut", timeout_s: float) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not pin.value:
             return True
         time.sleep(_POLL_INTERVAL_S)
     return False
@@ -206,12 +216,12 @@ def check_motion_interrupt(accel: ADXL367, int1_pin: "DigitalInOut") -> bool:
     with a sub-1g threshold triggers immediately from gravity alone on whichever axis
     is vertical, never actually waiting for real motion.
     """
-    print("Hold the board still for a moment (capturing reference)...")
+    print("\nHold the board still for a moment (capturing reference)...")
     time.sleep(_REFERENCE_SETTLE_S)
     accel.map_interrupt(1, {"activity"})
     accel.enable_motion_detection(threshold=_MOTION_THRESHOLD, time_=0, referenced=True)
     try:
-        print(f"MOVE/SHAKE THE BOARD NOW - waiting up to {_MOTION_WAIT_TIMEOUT_S:.0f}s...")
+        print(f"\nMOVE/SHAKE THE BOARD NOW - waiting up to {_MOTION_WAIT_TIMEOUT_S:.0f}s...")
         pin_asserted = _wait_for_pin(int1_pin, _MOTION_WAIT_TIMEOUT_S)
         status_bit = accel.events["motion"]
     finally:
@@ -232,7 +242,7 @@ def check_tap_interrupt(accel: ADXL367, int1_pin: "DigitalInOut") -> bool:
     accel.map_interrupt(1, {"single_tap"})
     accel.enable_tap_detection()
     try:
-        print(f"TAP THE BOARD ONCE, FIRMLY - waiting up to {_TAP_WAIT_TIMEOUT_S:.0f}s...")
+        print(f"\nTAP THE BOARD ONCE, FIRMLY - waiting up to {_TAP_WAIT_TIMEOUT_S:.0f}s...")
         pin_asserted = _wait_for_pin(int1_pin, _TAP_WAIT_TIMEOUT_S)
         status_bit = accel.events["single_tap"]
     finally:
@@ -240,6 +250,52 @@ def check_tap_interrupt(accel: ADXL367, int1_pin: "DigitalInOut") -> bool:
         accel.map_interrupt(1, set())
     ok = pin_asserted and status_bit
     return _report("tap interrupt (INT1)", ok, f"pin_asserted={pin_asserted} status_bit={status_bit}")
+
+
+def check_autosleep_wake_cycle(accel: ADXL367, int1_pin: "DigitalInOut") -> bool:
+    """Hold the board still for a bit, then move/shake it, when prompted.
+
+    Confirms linked/looped mode + autosleep end to end: once configured, the device
+    autonomously drops into wake-up mode on inactivity (AWAKE -> 0) and returns to
+    measurement mode on activity (AWAKE -> 1), with no further host writes to
+    POWER_CTL beyond the initial setup below. AWAKE is mapped to INT1 as a level
+    signal - the datasheet's documented "motion switch" use case - and checked
+    against both the physical pin and the STATUS register bit. Reuses INT1
+    sequentially, same as `check_tap_interrupt`.
+    """
+    print("\nHold the board still for a moment (settling before autosleep test)...")
+    time.sleep(_INACTIVITY_SETTLE_S)
+    accel.enable_motion_detection(threshold=_MOTION_THRESHOLD, time_=0, referenced=True)
+    accel.enable_inactivity_detection(threshold=50, time_=_INACTIVITY_TIME_S, referenced=True)
+    accel.link_loop_mode = LinkLoopMode.LOOPED
+    accel.autosleep = True
+    accel.map_interrupt(1, {"awake"})
+    try:
+        # Not asserted on: the settling sleep above means the board is often already
+        # stationary by the time LOOPED+autosleep engage, so the chip can legitimately
+        # read "asleep" instantly rather than starting "awake" - the sleep/wake
+        # transitions below are the real proof this works, not the starting value.
+        initially_awake = accel.events["awake"]
+        print(f"\nKEEP HOLDING STILL - waiting up to {_INACTIVITY_WAIT_TIMEOUT_S:.0f}s for autosleep...")
+        fell_asleep = _wait_for_pin_low(int1_pin, _INACTIVITY_WAIT_TIMEOUT_S)
+        asleep_status_bit = not accel.events["awake"]
+
+        print(f"\nMOVE/SHAKE THE BOARD NOW - waiting up to {_MOTION_WAIT_TIMEOUT_S:.0f}s to wake...")
+        woke_up = _wait_for_pin(int1_pin, _MOTION_WAIT_TIMEOUT_S)
+        awake_status_bit = accel.events["awake"]
+    finally:
+        accel.autosleep = False
+        accel.link_loop_mode = LinkLoopMode.DEFAULT
+        accel.disable_motion_detection()
+        accel.disable_inactivity_detection()
+        accel.map_interrupt(1, set())
+
+    ok = fell_asleep and asleep_status_bit and woke_up and awake_status_bit
+    detail = (
+        f"initially_awake={initially_awake} fell_asleep={fell_asleep}({asleep_status_bit}) "
+        f"woke_up={woke_up}({awake_status_bit})"
+    )
+    return _report("autosleep wake/sleep cycle (INT1=AWAKE)", ok, detail)
 
 
 def check_inactivity_interrupt(accel: ADXL367, int2_pin: "DigitalInOut") -> bool:
@@ -250,12 +306,12 @@ def check_inactivity_interrupt(accel: ADXL367, int2_pin: "DigitalInOut") -> bool
     inactivity requires *every* axis to read below threshold, which the gravity-aligned
     axis never does, so it could never trigger regardless of actual stillness.
     """
-    print("Set the board down and hold it still...")
+    print("\nSet the board down and hold it still...")
     time.sleep(_INACTIVITY_SETTLE_S)
     accel.map_interrupt(2, {"inactivity"})
     accel.enable_inactivity_detection(threshold=50, time_=_INACTIVITY_TIME_S, referenced=True)
     try:
-        print(f"KEEP HOLDING STILL - waiting up to {_INACTIVITY_WAIT_TIMEOUT_S:.0f}s...")
+        print(f"\nKEEP HOLDING STILL - waiting up to {_INACTIVITY_WAIT_TIMEOUT_S:.0f}s...")
         pin_asserted = _wait_for_pin(int2_pin, _INACTIVITY_WAIT_TIMEOUT_S)
         status_bit = accel.events["inactivity"]
     finally:
@@ -281,7 +337,7 @@ def check_pedometer(accel: ADXL366) -> bool:
     steps = 0
     try:
         print(
-            "MIMIC WALKING WITH THE BOARD - hold it and swing/bounce it rhythmically "
+            "\nMIMIC WALKING WITH THE BOARD - hold it and swing/bounce it rhythmically "
             f"(like footsteps), at least {_PEDOMETER_STEP_TARGET} steps' worth - "
             f"waiting up to {_PEDOMETER_WAIT_TIMEOUT_S:.0f}s...",
         )
@@ -297,7 +353,7 @@ def check_pedometer(accel: ADXL366) -> bool:
 
 def _check_axis_orientation(accel: ADXL367, index: int, label: str) -> bool:
     print(
-        f"Orient the board flat with its {label}-axis (per the board's silkscreen) "
+        f"\nOrient the board flat with its {label}-axis (per the board's silkscreen) "
         "pointing straight up, then hold still...",
     )
     time.sleep(_ORIENTATION_SETTLE_S)
@@ -321,7 +377,8 @@ def check_orientation(accel: ADXL367) -> bool:
     check naturally rather than needing a separate sign check.
     """
     results = [_check_axis_orientation(accel, i, label) for i, label in enumerate(_ORIENTATION_AXES)]
-    print(f"\n{sum(results)}/{len(results)} orientation checks passed")
+    main_msg = f"{sum(results)}/{len(results)} orientation checks passed"
+    print(f"\n{main_msg}\n{'-' * len(main_msg)}\n")
     return all(results)
 
 
@@ -335,9 +392,11 @@ def run_interactive(accel: ADXL367, int1_pin: "DigitalInOut", int2_pin: "Digital
         check_motion_interrupt(accel, int1_pin),
         check_inactivity_interrupt(accel, int2_pin),
         check_tap_interrupt(accel, int1_pin),
+        check_autosleep_wake_cycle(accel, int1_pin),
         check_orientation(accel),
     ]
     if isinstance(accel, ADXL366):
         results.append(check_pedometer(accel))
-    print(f"\n{sum(results)}/{len(results)} interactive checks passed")
+    main_msg = f"{sum(results)}/{len(results)} interactive checks passed"
+    print(f"\n{main_msg}\n{'-' * len(main_msg)}\n")
     return all(results)
