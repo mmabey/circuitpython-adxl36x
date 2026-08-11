@@ -40,6 +40,7 @@ _PEDOMETER_WAIT_TIMEOUT_S = 30.0
 _PEDOMETER_POLL_INTERVAL_S = 0.5
 _ORIENTATION_SETTLE_S = 3.0
 _ORIENTATION_AXES = ("X", "Y", "Z")
+_TAP_WAIT_TIMEOUT_S = 10.0
 
 
 def _report(name: str, passed: bool, detail: str = "") -> bool:
@@ -187,6 +188,27 @@ def check_motion_interrupt(accel: ADXL367, int1_pin: "DigitalInOut") -> bool:
     return _report("motion interrupt (INT1)", ok, f"pin_asserted={pin_asserted} status_bit={status_bit}")
 
 
+def check_tap_interrupt(accel: ADXL367, int1_pin: "DigitalInOut") -> bool:
+    """Physically tap the board once, firmly, when prompted.
+
+    Confirms tap detection end to end: a real tap -> TAP_THRESH/TAP_DUR comparison ->
+    STATUS_2 -> the event routed to the physical INT1 pin via map_interrupt(). Reuses
+    INT1 sequentially with `check_motion_interrupt` - fine since each call maps and
+    then clears its own event before returning.
+    """
+    accel.map_interrupt(1, {"single_tap"})
+    accel.enable_tap_detection()
+    try:
+        print(f"TAP THE BOARD ONCE, FIRMLY - waiting up to {_TAP_WAIT_TIMEOUT_S:.0f}s...")
+        pin_asserted = _wait_for_pin(int1_pin, _TAP_WAIT_TIMEOUT_S)
+        status_bit = accel.events["single_tap"]
+    finally:
+        accel.disable_tap_detection()
+        accel.map_interrupt(1, set())
+    ok = pin_asserted and status_bit
+    return _report("tap interrupt (INT1)", ok, f"pin_asserted={pin_asserted} status_bit={status_bit}")
+
+
 def check_inactivity_interrupt(accel: ADXL367, int2_pin: "DigitalInOut") -> bool:
     """Hold the board completely still when prompted.
 
@@ -279,6 +301,7 @@ def run_interactive(accel: ADXL367, int1_pin: "DigitalInOut", int2_pin: "Digital
     results = [
         check_motion_interrupt(accel, int1_pin),
         check_inactivity_interrupt(accel, int2_pin),
+        check_tap_interrupt(accel, int1_pin),
         check_orientation(accel),
     ]
     if isinstance(accel, ADXL366):

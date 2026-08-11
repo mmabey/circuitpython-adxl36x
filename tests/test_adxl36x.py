@@ -233,6 +233,17 @@ def test_events_reflects_status_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> Non
     assert events["fifo_overrun"] is False
 
 
+def test_events_reflects_status_2_and_status_3_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    fake_i2c.registers[0x45] = 0b0000_0011  # TAP_ONE + TAP_TWO
+    fake_i2c.registers[0x46] = 0b0000_0001  # PEDOMETER_OVERFLOW
+    events = adxl366.events
+    assert events["single_tap"] is True
+    assert events["double_tap"] is True
+    assert events["pedometer_overflow"] is True
+    assert events["temp_adc_low"] is False
+    assert events["fuse_error"] is False
+
+
 # -- interrupt mapping --
 
 
@@ -318,6 +329,33 @@ def test_self_test_fails_outside_expected_delta(
     readings = iter([0] * _SELF_TEST_SAMPLE_COUNT + [100] * _SELF_TEST_SAMPLE_COUNT)
     monkeypatch.setattr(type(adxl366), "raw_x", property(lambda _self: next(readings)))
     assert adxl366.self_test() is False
+
+
+# -- tap detection --
+
+
+def test_enable_tap_detection_single_writes_expected_registers(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.enable_tap_detection(threshold=40, duration=0.005)
+    assert fake_i2c.registers[0x2F] == 40  # TAP_THRESH
+    assert fake_i2c.registers[0x30] == 8  # TAP_DUR: 0.005s / 625us = 8
+    assert fake_i2c.registers[0x31] == 0  # TAP_LATENT: 0 disables double-tap
+
+
+def test_enable_tap_detection_double_writes_latency_and_window(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.enable_tap_detection(double_tap=True, latency=0.025, window=0.05)
+    assert fake_i2c.registers[0x31] == 20  # TAP_LATENT: 0.025s / 1.25ms
+    assert fake_i2c.registers[0x32] == 40  # TAP_WINDOW: 0.05s / 1.25ms
+
+
+def test_enable_tap_detection_rejects_out_of_range_threshold(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="threshold"):
+        adxl366.enable_tap_detection(threshold=300)
+
+
+def test_disable_tap_detection_zeroes_threshold(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.enable_tap_detection(threshold=40)
+    adxl366.disable_tap_detection()
+    assert fake_i2c.registers[0x2F] == 0
 
 
 # -- ADXL366-only features --

@@ -68,6 +68,8 @@ _REG_INTMAP2_UPPER = const(0x3B)
 _REG_ADC_CTL = const(0x3C)
 _REG_TEMP_CTL = const(0x3D)
 _REG_AXIS_MASK = const(0x43)
+_REG_STATUS_2 = const(0x45)
+_REG_STATUS_3 = const(0x46)
 _REG_PEDOMETER_STEP_CNT_H = const(0x47)
 _REG_PEDOMETER_CTL = const(0x49)
 
@@ -232,6 +234,23 @@ _STATUS_ACT = const(0x10)
 _STATUS_INACT = const(0x20)
 _STATUS_AWAKE = const(0x40)
 _STATUS_ERR_USER_REGS = const(0x80)
+
+# -- STATUS_2 (0x45) bits --
+_STATUS_2_TAP_ONE = const(0x01)
+_STATUS_2_TAP_TWO = const(0x02)
+_STATUS_2_TEMP_ADC_LOW = const(0x04)
+_STATUS_2_TEMP_ADC_HIGH = const(0x08)
+_STATUS_2_KEEP_ALIVE_TIMER = const(0x10)
+_STATUS_2_FUSE_ERROR = const(0x80)
+
+# -- STATUS_3 (0x46) bits --
+_STATUS_3_PEDOMETER_OVERFLOW = const(0x01)
+
+# -- TAP_THRESH/TAP_DUR/TAP_LATENT/TAP_WINDOW scale factors (datasheet) --
+_TAP_DUR_SECONDS_PER_LSB = 625e-6
+_TAP_LATENT_WINDOW_SECONDS_PER_LSB = 1.25e-3
+_TAP_THRESH_MAX = const(0xFF)
+_TAP_TIME_REG_MAX = const(0xFF)
 
 
 def _decode_s14(msb: int, lsb: int) -> int:
@@ -631,14 +650,12 @@ class ADXL367:
 
     @property
     def events(self) -> dict[str, bool]:
-        """Currently-set event flags from STATUS (0x0B).
-
-        Does not yet include tap, pedometer-overflow, or ADC/temperature
-        threshold events - their status-register bit positions
-        (STATUS_COPY/STATUS_2/STATUS_3) aren't confirmed against the
-        datasheet yet.
+        """Currently-set event flags from STATUS (0x0B), STATUS_2 (0x45), and
+        STATUS_3 (0x46).
         """
         status = self._read_u8(_REG_STATUS)
+        status_2 = self._read_u8(_REG_STATUS_2)
+        status_3 = self._read_u8(_REG_STATUS_3)
         return {
             "data_ready": bool(status & _STATUS_DATA_RDY),
             "fifo_ready": bool(status & _STATUS_FIFO_RDY),
@@ -648,6 +665,13 @@ class ADXL367:
             "inactivity": bool(status & _STATUS_INACT),
             "awake": bool(status & _STATUS_AWAKE),
             "error": bool(status & _STATUS_ERR_USER_REGS),
+            "single_tap": bool(status_2 & _STATUS_2_TAP_ONE),
+            "double_tap": bool(status_2 & _STATUS_2_TAP_TWO),
+            "temp_adc_low": bool(status_2 & _STATUS_2_TEMP_ADC_LOW),
+            "temp_adc_high": bool(status_2 & _STATUS_2_TEMP_ADC_HIGH),
+            "keep_alive_timer": bool(status_2 & _STATUS_2_KEEP_ALIVE_TIMER),
+            "fuse_error": bool(status_2 & _STATUS_2_FUSE_ERROR),
+            "pedometer_overflow": bool(status_3 & _STATUS_3_PEDOMETER_OVERFLOW),
         }
 
     # -- interrupt routing --
@@ -779,6 +803,50 @@ class ADXL367:
         diff = after - before
         scale = _RANGE_SCALE_MULTIPLIER[self._range]
         return _SELF_TEST_MIN * scale <= diff <= _SELF_TEST_MAX * scale
+
+    # -- tap detection --
+
+    def enable_tap_detection(
+        self,
+        *,
+        threshold: int = 30,
+        duration: float = 0.01,
+        double_tap: bool = False,
+        latency: float = 0.02,
+        window: float = 0.03,
+    ) -> None:
+        """Enable single-tap (or single- and double-tap) detection.
+
+        `threshold` is a raw unsigned 8-bit magnitude (31.25mg/LSB per the datasheet,
+        though only accurate at the +/-2g range - kept raw here rather than
+        auto-converted, matching `enable_motion_detection`'s threshold). `duration` is
+        the max time (seconds) an over-threshold event may last to still count as a
+        tap. With `double_tap=True`, `latency` (wait time after the first tap before a
+        second tap may start) and `window` (how long after that a second tap must
+        land) are also configured; a value of 0 for `latency` disables double-tap
+        detection per the datasheet, which is what leaving `double_tap=False` does
+        here.
+        """
+        if not 0 <= threshold <= _TAP_THRESH_MAX:
+            msg = f"threshold must be in range 0-{_TAP_THRESH_MAX}, got {threshold!r}"
+            raise ValueError(msg)
+        self._write_u8(_REG_TAP_THRESH, threshold)
+        duration_lsb = round(duration / _TAP_DUR_SECONDS_PER_LSB)
+        self._write_u8(_REG_TAP_DUR, min(max(duration_lsb, 0), _TAP_TIME_REG_MAX))
+        if double_tap:
+            latency_lsb = round(latency / _TAP_LATENT_WINDOW_SECONDS_PER_LSB)
+            window_lsb = round(window / _TAP_LATENT_WINDOW_SECONDS_PER_LSB)
+            self._write_u8(_REG_TAP_LATENT, min(max(latency_lsb, 0), _TAP_TIME_REG_MAX))
+            self._write_u8(_REG_TAP_WINDOW, min(max(window_lsb, 0), _TAP_TIME_REG_MAX))
+        else:
+            self._write_u8(_REG_TAP_LATENT, 0)
+
+    def disable_tap_detection(self) -> None:
+        """Disable tap and double-tap detection.
+
+        Per the datasheet, a TAP_THRESH value of 0 disables both.
+        """
+        self._write_u8(_REG_TAP_THRESH, 0)
 
 
 class ADXL366(ADXL367):
