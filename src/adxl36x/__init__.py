@@ -814,8 +814,11 @@ class ADXL367:
         motion" figure for TIME_ACT, which lines up with 0xFF samples at the slowest
         12.5Hz ODR).
         """
+        if time_seconds < 0:
+            msg = f"time_ must be non-negative, got {time_seconds!r}"
+            raise ValueError(msg)
         samples = round(time_seconds * _DATA_RATE_HZ[self._data_rate])
-        return min(max(samples, 0), max_samples)
+        return min(samples, max_samples)
 
     def enable_motion_detection(
         self,
