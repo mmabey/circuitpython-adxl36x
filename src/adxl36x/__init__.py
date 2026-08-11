@@ -224,7 +224,8 @@ _AXIS_MASK_ACT_INACT_Z = const(0x04)
 
 
 class TapAxis:
-    """Values for `ADXL367.tap_axis` (AXIS_MASK's TAP_AXIS bits[5:4]).
+    """Values for `ADXL367.tap_axis`: which single axis tap detection evaluates
+    (AXIS_MASK's TAP_AXIS bits[5:4]).
 
     Named X_AXIS/Y_AXIS/Z_AXIS rather than bare X/Y/Z: CircuitPython's `const()`
     folding isn't class-scoped - it's a whole-module substitution keyed by bare
@@ -249,7 +250,9 @@ _FIFO_SAMPLE_SETS_MAX = const(0x1FF)
 
 
 class FIFOMode:
-    """Values for `ADXL367.configure_fifo(mode=...)`."""
+    """Values for `ADXL367.configure_fifo(mode=...)`. See that method's docstring for
+    what each mode does.
+    """
 
     DISABLED = const(0x00)
     OLDEST_SAVED = const(0x01)
@@ -452,6 +455,20 @@ class ADXL367:
         cs: "DigitalInOut | None" = None,
         baudrate: int = 1_000_000,
     ) -> None:
+        """Construct a driver instance over I2C.
+
+        `spi_bus`/`cs`/`baudrate` exist so `from_spi()` can build an instance
+        through this same constructor - use `from_spi()` for SPI rather than
+        passing those three directly.
+
+        :param i2c_bus: The I2C bus the device is connected to.
+        :param address: The device's I2C address, set by the ASEL pin.
+            Defaults to :const:`0x53` (ASEL tied high); pass :const:`0x1D`
+            instead if ASEL is tied low.
+        :param spi_bus: Not for direct use - see `from_spi()`.
+        :param cs: Not for direct use - see `from_spi()`.
+        :param baudrate: Not for direct use - see `from_spi()`.
+        """
         # `from_spi()` is the intended entry point for SPI - this constructor takes
         # spi_bus/cs directly (rather than `from_spi()` building the instance itself via
         # `cls.__new__()`) because CircuitPython's built-in types don't expose `__new__`
@@ -478,7 +495,14 @@ class ADXL367:
         *,
         baudrate: int = 1_000_000,
     ) -> "Self":
-        """Construct a driver instance over SPI instead of I2C."""
+        """Construct a driver instance over SPI instead of I2C.
+
+        :param spi_bus: The SPI bus the device is connected to.
+        :param cs: The chip-select pin - driven low for the duration of each
+            transaction, idle high otherwise.
+        :param baudrate: The SPI clock frequency in Hz. Defaults to 1MHz.
+        :returns: A new driver instance connected over SPI.
+        """
         return cls(spi_bus=spi_bus, cs=cs, baudrate=baudrate)
 
     # -- low-level bus access --
@@ -613,10 +637,15 @@ class ADXL367:
 
     @property
     def keep_alive_timer(self) -> "float | None":
-        """Keep-alive timer period in seconds, or `None` if it's off (TIMER_CTL bits[4:0]).
+        """Keep-alive timer period in seconds, or :const:`None` if it's off (TIMER_CTL bits[4:0]).
 
-        When it expires, `.events["keep_alive_timer"]` (STATUS_2 bit 4) is set and stays
-        set until STATUS_2 is read - can also be routed to INT1/INT2 via `map_interrupt`.
+        Only 20 discrete periods are available (160ms, doubling up to ~23.2 hours) -
+        setting this to any other value snaps to the *nearest* of those 20, silently;
+        read the property back afterward to see the period that actually got set.
+
+        When it expires, ``.events["keep_alive_timer"]`` (STATUS_2 bit 4) is set and
+        stays set until STATUS_2 is read - can also be routed to INT1/INT2 via
+        `map_interrupt`.
         """
         raw = self._read_u8(_REG_TIMER_CTL) & _TIMER_CTL_KEEP_ALIVE_MASK
         if raw == 0:
@@ -797,11 +826,25 @@ class ADXL367:
     ) -> None:
         """Enable activity (motion) detection.
 
-        `threshold` is a raw accelerometer-code magnitude (same units as
-        `raw_acceleration`, i.e. scaled by `range`) rather than the ADXL34x's
-        fixed 62.5 mg/LSB - the exact mg/LSB figure for this threshold field
-        is not confirmed against the datasheet. `time_` is in seconds, converted to
-        TIME_ACT's raw sample count using the current `data_rate`.
+        :param threshold: A raw accelerometer-code magnitude (same units as
+            `raw_acceleration`, i.e. scaled by `g_range`) rather than the
+            ADXL34x's fixed 62.5 mg/LSB - the exact mg/LSB figure for this
+            threshold field is not confirmed against the datasheet. Defaults
+            to :const:`100`.
+        :param time_: How long, in seconds, activity must stay above
+            `threshold` before an event fires. Converted to TIME_ACT's raw
+            sample count using the current `data_rate`. Defaults to :const:`1`.
+        :param referenced: Selects how `threshold` is compared against
+            acceleration. :const:`False` (absolute, the default) compares raw
+            acceleration directly against `threshold` - since gravity
+            contributes a constant ~1g on whichever axis is "down", a
+            `threshold` below that will trigger immediately from gravity
+            alone, regardless of real motion. :const:`True` (referenced)
+            compares acceleration against a reference point captured when
+            detection is engaged (roughly, the orientation at that moment), so
+            `threshold` measures deviation from *that*, not zero - this lets
+            subtle motion be detected even with `threshold` set well below
+            1g, independent of orientation.
         """
         self._set_threshold(_REG_THRESH_ACT_H, _REG_THRESH_ACT_L, threshold)
         samples = self._seconds_to_samples(time_, _TIME_ACT_MAX_SAMPLES)
@@ -822,15 +865,28 @@ class ADXL367:
     ) -> None:
         """Enable inactivity detection.
 
-        See `enable_motion_detection` for the `time_` conversion. When `referenced=True`,
-        this first bootstraps the reference with a throwaway absolute-mode configuration
-        at the maximum threshold - guaranteed to trigger a real inactivity event
-        regardless of orientation - before applying the requested configuration.
-        Confirmed against real hardware: simply enabling referenced inactivity, even
-        immediately after a fresh measurement-mode transition, never actually latches a
-        reference on its own. Only an actual inactivity event does (the datasheet's
-        other documented trigger for recalculating the reference), so one has to be
+        When `referenced` is :const:`True`, this first bootstraps the reference
+        with a throwaway absolute-mode configuration at the maximum threshold -
+        guaranteed to trigger a real inactivity event regardless of orientation -
+        before applying the requested configuration. Confirmed against real
+        hardware: simply enabling referenced inactivity, even immediately after a
+        fresh measurement-mode transition, never actually latches a reference on
+        its own. Only an actual inactivity event does (the datasheet's other
+        documented trigger for recalculating the reference), so one has to be
         manufactured first.
+
+        :param threshold: Same units as `enable_motion_detection`'s
+            `threshold`. Defaults to :const:`50`.
+        :param time_: How long, in seconds, acceleration must stay
+            *below* `threshold` before an event fires (the inverse of activity
+            detection's "above"). Same seconds-to-samples conversion as
+            `enable_motion_detection`'s `time_`. Defaults to :const:`3`.
+        :param referenced: Same concept as `enable_motion_detection`'s
+            `referenced` - :const:`False` (absolute, the default) would never
+            trigger for a device resting motionless if `threshold` is below
+            1g, since gravity keeps one axis near 1g; :const:`True`
+            (referenced) measures deviation from a reference point instead of
+            from zero, so it can.
         """
         if referenced:
             self._set_threshold(_REG_THRESH_INACT_H, _REG_THRESH_INACT_L, _THRESHOLD_MAX)
@@ -854,7 +910,31 @@ class ADXL367:
     @property
     def events(self) -> dict[str, bool]:
         """Currently-set event flags from STATUS (0x0B), STATUS_2 (0x45), and
-        STATUS_3 (0x46).
+        STATUS_3 (0x46):
+
+        - ``"data_ready"``: a new sample is available. Does NOT clear on this
+          read - per the datasheet, only reading the data registers themselves
+          does (e.g. via `acceleration`/`raw_x`/etc.).
+        - ``"fifo_ready"`` / ``"fifo_watermark"`` / ``"fifo_overrun"``: FIFO
+          status. Also don't clear on this read - they clear once enough FIFO
+          data has been drained (e.g. via `read_fifo()`).
+        - ``"motion"`` / ``"inactivity"``: activity/inactivity has been
+          detected (see `enable_motion_detection`/`enable_inactivity_detection`)
+          - clears on this read.
+        - ``"awake"``: whether the device is currently active. Reflects live
+          state rather than a latched event, so it never "clears" - see
+          `autosleep`.
+        - ``"error"``: a user register error was detected (an SEU event
+          disturbed a register, or the device isn't configured).
+        - ``"single_tap"`` / ``"double_tap"``: a tap was detected (see
+          `enable_tap_detection`) - clears on this read.
+        - ``"temp_adc_low"`` / ``"temp_adc_high"``: `temperature`/`adc_value`
+          crossed a configured threshold.
+        - ``"keep_alive_timer"``: `keep_alive_timer` has expired - clears on
+          this read.
+        - ``"fuse_error"``: an internal calibration fuse error was detected.
+        - ``"pedometer_overflow"``: the pedometer step counter has overflowed
+          (`ADXL366` only - always :const:`False` on `ADXL367`).
         """
         status = self._read_u8(_REG_STATUS)
         status_2 = self._read_u8(_REG_STATUS_2)
@@ -880,7 +960,26 @@ class ADXL367:
     # -- interrupt routing --
 
     def map_interrupt(self, pin: int, events: "set[str] | frozenset[str]") -> None:
-        """Route the named events (keys of `_INTERRUPT_EVENTS`) to INT1 or INT2."""
+        """Route the named events to an interrupt pin.
+
+        This replaces the pin's entire mapping each call, rather than adding to
+        it - pass an empty set to unmap everything from a pin.
+
+        :param pin: Which physical pin to map to: :const:`1` for INT1 or
+            :const:`2` for INT2.
+        :param events: The event names to route to `pin`, replacing any
+            previous mapping. Valid names: ``"data_ready"``, ``"fifo_ready"``,
+            ``"fifo_watermark"``, ``"fifo_overrun"``, ``"activity"``,
+            ``"inactivity"``, ``"awake"``, ``"single_tap"``, ``"double_tap"``,
+            ``"temp_adc_low"``, ``"temp_adc_high"``, ``"keep_alive_timer"``,
+            ``"user_register_error"``, ``"fuse_error"`` - each corresponds to
+            the like-named key in `.events`, except ``"activity"``
+            (``.events["motion"]``) and ``"user_register_error"``
+            (``.events["error"]``), which are spelled differently here than in
+            `.events`. There's also ``"active_low"``, which isn't a status
+            flag at all - it reconfigures the pin itself to be active-low
+            instead of the default active-high.
+        """
         if pin not in (1, 2):
             msg = f"pin must be 1 or 2, got {pin!r}"
             raise ValueError(msg)
@@ -931,7 +1030,21 @@ class ADXL367:
     ) -> None:
         """Configure the FIFO.
 
-        `sample_sets` (0-511) is the total number of sample sets to store.
+        :param mode: A `FIFOMode` value. `FIFOMode.DISABLED` turns the FIFO
+            off. `FIFOMode.OLDEST_SAVED` fills once and stops; new data is only
+            accepted again once old entries are read out, making room (aka
+            "first N"). `FIFOMode.STREAM` (the default) always holds the most
+            recent data, discarding the oldest entry to make room for each new
+            one (aka "last N") - useful for letting the FIFO buffer samples
+            while the host is busy with other work. `FIFOMode.TRIGGERED`
+            behaves like STREAM until an activity event occurs, then stops -
+            like an oscilloscope's one-shot trigger, preserving the samples
+            leading up to the event.
+        :param fifo_format: A `FIFOFormat` value selecting which
+            channel(s) each sample set contains - see `FIFOFormat`'s
+            docstring for the T/A suffixes. Defaults to `FIFOFormat.XYZ`.
+        :param sample_sets: The total number of sample sets to store, in
+            the range 0-511. Defaults to :const:`128`.
         """
         if not 0 <= sample_sets <= _FIFO_SAMPLE_SETS_MAX:
             msg = f"sample_sets must be in range 0-{_FIFO_SAMPLE_SETS_MAX}, got {sample_sets!r}"
@@ -953,9 +1066,10 @@ class ADXL367:
     def read_fifo(self) -> list[tuple[str, int]]:
         """Read and drain all available FIFO entries.
 
-        Returns a list of (channel_name, raw_signed_code) pairs, where
-        channel_name is one of "x", "y", "z", "temp_or_adc". Accel-channel
-        values use the same raw-code scale as `raw_acceleration`.
+        :returns: A list of ``(channel_name, raw_signed_code)`` pairs, where
+            ``channel_name`` is one of ``"x"``, ``"y"``, ``"z"``,
+            ``"temp_or_adc"``. Accel-channel values use the same raw-code
+            scale as `raw_acceleration`.
         """
         entries = self.fifo_entries
         buffer = bytearray(entries * 2)
@@ -1020,15 +1134,23 @@ class ADXL367:
     ) -> None:
         """Enable single-tap (or single- and double-tap) detection.
 
-        `threshold` is a raw unsigned 8-bit magnitude (31.25mg/LSB per the datasheet,
-        though only accurate at the +/-2g range - kept raw here rather than
-        auto-converted, matching `enable_motion_detection`'s threshold). `duration` is
-        the max time (seconds) an over-threshold event may last to still count as a
-        tap. With `double_tap=True`, `latency` (wait time after the first tap before a
-        second tap may start) and `window` (how long after that a second tap must
-        land) are also configured; a value of 0 for `latency` disables double-tap
-        detection per the datasheet, which is what leaving `double_tap=False` does
-        here.
+        :param threshold: A raw unsigned 8-bit magnitude (31.25mg/LSB per
+            the datasheet, though only accurate at the +/-2g range - kept raw
+            here rather than auto-converted, matching `enable_motion_detection`'s
+            `threshold`). Defaults to :const:`30`.
+        :param duration: The max time, in seconds, an over-threshold
+            event may last to still count as a tap. Defaults to :const:`0.01`.
+        :param double_tap: When :const:`True`, also configures `latency`
+            and `window` to detect a second tap following the first. When
+            :const:`False` (the default), only single taps are detected -
+            achieved by writing :const:`0` to the datasheet's latency field,
+            which it documents as disabling double-tap detection outright.
+        :param latency: Only used when `double_tap` is :const:`True`:
+            how long, in seconds, to wait after the first tap before a second
+            tap may start. Defaults to :const:`0.02`.
+        :param window: Only used when `double_tap` is :const:`True`: how
+            long, in seconds, after `latency` elapses a second tap must land
+            within to count. Defaults to :const:`0.03`.
         """
         if not 0 <= threshold <= _TAP_THRESH_MAX:
             msg = f"threshold must be in range 0-{_TAP_THRESH_MAX}, got {threshold!r}"
@@ -1069,9 +1191,9 @@ class ADXL367:
     def blocked_axes(self) -> "frozenset[str]":
         """Axes currently excluded from activity/inactivity detection (none, by default).
 
-        Per the datasheet, a blocked axis is left out of both the activity and
-        inactivity threshold comparisons - it doesn't affect `tap_axis` or plain
-        acceleration reads.
+        A subset of ``{"x", "y", "z"}``. Per the datasheet, a blocked axis is left out
+        of both the activity and inactivity threshold comparisons - it doesn't
+        affect `tap_axis` or plain acceleration reads.
         """
         raw = self._read_u8(_REG_AXIS_MASK)
         blocked = set()
@@ -1122,7 +1244,15 @@ class ADXL366(ADXL367):
     def reference_readback(self, *, inactivity: bool = False) -> tuple[int, int, int]:
         """Read back the activity/inactivity reference point.
 
-        Only meaningful when the corresponding detector is in referenced mode.
+        Only meaningful when the corresponding detector is in referenced mode
+        (see `enable_motion_detection`/`enable_inactivity_detection`'s
+        `referenced` parameter).
+
+        :param inactivity: When :const:`True`, read the inactivity
+            reference; when :const:`False` (the default), read the activity
+            reference.
+        :returns: The reference point as a raw ``(x, y, z)`` tuple, the same
+            scale as `raw_acceleration`.
         """
         select = 0x02 if inactivity else 0x01
         self._write_masked(
