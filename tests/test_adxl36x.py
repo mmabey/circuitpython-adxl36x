@@ -6,21 +6,51 @@ import pytest
 from conftest import FakeDigitalInOut, FakeI2C, FakeSPI, new_adxl366, new_adxl366_spi, new_adxl367
 
 from adxl36x import (
+    _ACT_INACT_CTL_ACT_MASK,
+    _ACT_INACT_CTL_INACT_SHIFT,
+    _ACTIVITY_ENABLE,
+    _POWER_CTL_AUTOSLEEP,
+    _POWER_CTL_WAKEUP,
+    _REFERENCED_ACTIVITY_ENABLE,
+    _REG_ACT_INACT_CTL,
+    _REG_AXIS_MASK,
     _REG_FIFO_ENTRIES_H,
     _REG_FIFO_ENTRIES_L,
     _REG_FILTER_CTL,
     _REG_INTMAP1_LWR,
     _REG_INTMAP1_UPPER,
+    _REG_POWER_CTL,
     _REG_STATUS,
+    _REG_STATUS_2,
+    _REG_STATUS_3,
+    _REG_TAP_DUR,
+    _REG_TAP_LATENT,
+    _REG_TAP_THRESH,
+    _REG_TAP_WINDOW,
+    _REG_THRESH_INACT_H,
+    _REG_TIME_ACT,
+    _REG_TIME_INACT_H,
+    _REG_TIME_INACT_L,
+    _REG_TIMER_CTL,
+    _REG_X_OFFSET,
+    _REG_X_SENS,
     _REG_XDATA_H,
     _REVID_ADXL366,
     _REVID_ADXL367,
+    _SELF_TEST_SAMPLE_COUNT,
+    _THRESHOLD_MAX,
+    _TIMER_CTL_KEEP_ALIVE_MASK,
+    _TIMER_CTL_WAKEUP_RATE_MASK,
+    _TIMER_CTL_WAKEUP_RATE_SHIFT,
     ADXL366,
     DataRate,
     FIFOFormat,
     FIFOMode,
+    LinkLoopMode,
     OpMode,
     Range,
+    TapAxis,
+    WakeupRate,
     _decode_s14,
 )
 
@@ -56,6 +86,17 @@ def test_adxl367_rejects_adxl366_revid() -> None:
         new_adxl367(fake)
 
 
+def test_init_survives_expected_oserror_on_reset_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Confirmed against real ADXL366 hardware: the reset-key write commonly raises
+    OSError because the device starts resetting its own I2C logic mid-transaction, even
+    though the reset itself lands correctly. Construction must not fail because of it.
+    """
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    fake = FakeI2C(raise_oserror_on_reset=True)
+    device = new_adxl366(fake)
+    assert device.power_mode == OpMode.MEASURE
+
+
 def test_from_spi_construction() -> None:
     fake_spi = FakeSPI()
     cs = FakeDigitalInOut()
@@ -81,6 +122,74 @@ def test_data_rate_roundtrip_and_register_bits(adxl366: ADXL366, fake_i2c: FakeI
     adxl366.data_rate = DataRate.RATE_400_HZ
     assert adxl366.data_rate == DataRate.RATE_400_HZ
     assert fake_i2c.registers[_REG_FILTER_CTL] & 0x07 == DataRate.RATE_400_HZ
+
+
+def test_wakeup_mode_roundtrip(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.wakeup_mode = True
+    assert adxl366.wakeup_mode is True
+    assert fake_i2c.registers[_REG_POWER_CTL] & _POWER_CTL_WAKEUP
+    adxl366.wakeup_mode = False
+    assert adxl366.wakeup_mode is False
+
+
+def test_wakeup_rate_roundtrip_and_register_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.wakeup_rate = WakeupRate.RATE_3_SPS
+    assert adxl366.wakeup_rate == WakeupRate.RATE_3_SPS
+    raw = fake_i2c.registers[_REG_TIMER_CTL]
+    assert (raw & _TIMER_CTL_WAKEUP_RATE_MASK) >> _TIMER_CTL_WAKEUP_RATE_SHIFT == WakeupRate.RATE_3_SPS
+
+
+def test_wakeup_rate_setter_rejects_invalid_value(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="WakeupRate"):
+        adxl366.wakeup_rate = 7
+
+
+def test_autosleep_roundtrip(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.autosleep = True
+    assert adxl366.autosleep is True
+    assert fake_i2c.registers[_REG_POWER_CTL] & _POWER_CTL_AUTOSLEEP
+    adxl366.autosleep = False
+    assert adxl366.autosleep is False
+
+
+def test_keep_alive_timer_defaults_to_off(adxl366: ADXL366) -> None:
+    assert adxl366.keep_alive_timer is None
+
+
+def test_keep_alive_timer_roundtrip_and_register_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.keep_alive_timer = 0.16
+    assert adxl366.keep_alive_timer == pytest.approx(0.16)
+    assert fake_i2c.registers[_REG_TIMER_CTL] & _TIMER_CTL_KEEP_ALIVE_MASK == 1
+
+    adxl366.keep_alive_timer = 1.28
+    assert adxl366.keep_alive_timer == pytest.approx(1.28)
+    assert fake_i2c.registers[_REG_TIMER_CTL] & _TIMER_CTL_KEEP_ALIVE_MASK == 4
+
+
+def test_keep_alive_timer_none_disables(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.keep_alive_timer = 1.28
+    adxl366.keep_alive_timer = None
+    assert adxl366.keep_alive_timer is None
+    assert fake_i2c.registers[_REG_TIMER_CTL] & _TIMER_CTL_KEEP_ALIVE_MASK == 0
+
+
+def test_keep_alive_timer_clamps_to_max_code(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.keep_alive_timer = 1_000_000
+    assert fake_i2c.registers[_REG_TIMER_CTL] & _TIMER_CTL_KEEP_ALIVE_MASK == 20
+
+
+def test_keep_alive_timer_rejects_non_positive(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="period_seconds"):
+        adxl366.keep_alive_timer = 0
+
+    with pytest.raises(ValueError, match="period_seconds"):
+        adxl366.keep_alive_timer = -1
+
+
+def test_keep_alive_timer_preserves_wakeup_rate_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.wakeup_rate = WakeupRate.RATE_3_SPS
+    adxl366.keep_alive_timer = 1.28
+    assert adxl366.wakeup_rate == WakeupRate.RATE_3_SPS
 
 
 # -- acceleration decode/scale --
@@ -124,7 +233,7 @@ def test_acceleration_scaling_follows_range(adxl366: ADXL366, fake_i2c: FakeI2C)
     assert x == pytest.approx(expected)
 
 
-# -- offsets --
+# -- offsets / sensitivity trim --
 
 
 def test_offset_roundtrip(adxl366: ADXL366) -> None:
@@ -132,9 +241,43 @@ def test_offset_roundtrip(adxl366: ADXL366) -> None:
     assert adxl366.offset == (1, 2, 3)
 
 
+def test_offset_roundtrip_negative(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.offset = (-16, -1, 15)
+    assert adxl366.offset == (-16, -1, 15)
+    assert fake_i2c.registers[_REG_X_OFFSET] == 0x10
+    assert fake_i2c.registers[_REG_X_OFFSET + 1] == 0x1F
+
+
 def test_offset_rejects_out_of_range(adxl366: ADXL366) -> None:
     with pytest.raises(ValueError, match="offset"):
         adxl366.offset = (0, 0, 32)
+
+
+def test_offset_rejects_below_signed_range(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="offset"):
+        adxl366.offset = (0, 0, -17)
+
+
+def test_sens_roundtrip(adxl366: ADXL366) -> None:
+    adxl366.sens = (1, 2, 3)
+    assert adxl366.sens == (1, 2, 3)
+
+
+def test_sens_roundtrip_negative(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.sens = (-32, -1, 31)
+    assert adxl366.sens == (-32, -1, 31)
+    assert fake_i2c.registers[_REG_X_SENS] == 0x20
+    assert fake_i2c.registers[_REG_X_SENS + 1] == 0x3F
+
+
+def test_sens_rejects_out_of_range(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="sens"):
+        adxl366.sens = (0, 0, 32)
+
+
+def test_sens_rejects_below_signed_range(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="sens"):
+        adxl366.sens = (0, 0, -33)
 
 
 # -- activity/inactivity --
@@ -143,6 +286,104 @@ def test_offset_rejects_out_of_range(adxl366: ADXL366) -> None:
 def test_enable_motion_detection_rejects_large_threshold(adxl366: ADXL366) -> None:
     with pytest.raises(ValueError, match="threshold"):
         adxl366.enable_motion_detection(threshold=0x2000)
+
+
+def test_enable_motion_detection_converts_seconds_to_samples(
+    adxl366: ADXL366,
+    fake_i2c: FakeI2C,
+) -> None:
+    adxl366.data_rate = DataRate.RATE_100_HZ
+    adxl366.enable_motion_detection(time_=2)
+    assert fake_i2c.registers[_REG_TIME_ACT] == 200
+
+
+def test_enable_motion_detection_rejects_negative_time(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="time_"):
+        adxl366.enable_motion_detection(time_=-1)
+
+
+def test_enable_inactivity_detection_converts_seconds_to_samples(
+    adxl366: ADXL366,
+    fake_i2c: FakeI2C,
+) -> None:
+    adxl366.data_rate = DataRate.RATE_100_HZ
+    adxl366.enable_inactivity_detection(time_=3)
+    samples = (fake_i2c.registers[_REG_TIME_INACT_H] << 8) | fake_i2c.registers[_REG_TIME_INACT_L]
+    assert samples == 300
+
+
+def test_enable_inactivity_detection_rejects_negative_time(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="time_"):
+        adxl366.enable_inactivity_detection(time_=-1)
+
+
+def test_enable_inactivity_detection_referenced_bootstraps_first(
+    adxl366: ADXL366,
+    fake_i2c: FakeI2C,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Confirmed against real ADXL366 hardware: referenced inactivity never latches a
+    reference just from being enabled, even right after a fresh measurement-mode
+    transition - only an actual inactivity event does. So this must manufacture one
+    first, via a throwaway absolute/max-threshold configuration, before applying the
+    requested one.
+    """
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    adxl366.data_rate = DataRate.RATE_100_HZ
+    adxl366.enable_inactivity_detection(threshold=50, time_=3, referenced=True)
+
+    act_inact_writes = [value for register, value in fake_i2c.writes if register == _REG_ACT_INACT_CTL]
+    assert len(act_inact_writes) == 2
+    bootstrap_value, real_value = act_inact_writes
+    assert bootstrap_value == _ACTIVITY_ENABLE << _ACT_INACT_CTL_INACT_SHIFT
+    assert real_value == _REFERENCED_ACTIVITY_ENABLE << _ACT_INACT_CTL_INACT_SHIFT
+
+    # Final register state reflects the requested threshold/time, not the bootstrap's.
+    assert fake_i2c.registers[_REG_THRESH_INACT_H] != (_THRESHOLD_MAX >> 6) & 0x7F
+    samples = (fake_i2c.registers[_REG_TIME_INACT_H] << 8) | fake_i2c.registers[_REG_TIME_INACT_L]
+    assert samples == 300
+
+
+def test_enable_inactivity_detection_absolute_skips_bootstrap(
+    adxl366: ADXL366,
+    fake_i2c: FakeI2C,
+) -> None:
+    adxl366.enable_inactivity_detection(threshold=50, time_=2, referenced=False)
+    act_inact_writes = [value for register, value in fake_i2c.writes if register == _REG_ACT_INACT_CTL]
+    assert len(act_inact_writes) == 1
+
+
+def test_link_loop_mode_roundtrip_and_register_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.link_loop_mode = LinkLoopMode.LOOPED
+    assert adxl366.link_loop_mode == LinkLoopMode.LOOPED
+    assert (fake_i2c.registers[_REG_ACT_INACT_CTL] >> 4) & 0x03 == LinkLoopMode.LOOPED
+
+    adxl366.link_loop_mode = LinkLoopMode.LINKED
+    assert adxl366.link_loop_mode == LinkLoopMode.LINKED
+
+    adxl366.link_loop_mode = LinkLoopMode.DEFAULT
+    assert adxl366.link_loop_mode == LinkLoopMode.DEFAULT
+
+
+def test_link_loop_mode_setter_rejects_invalid_value(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="LinkLoopMode"):
+        adxl366.link_loop_mode = 0x2
+
+
+def test_link_loop_mode_treats_undocumented_alias_as_default(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    """0b10 is an undocumented alias for DEFAULT (0b00) per the datasheet's ACT_INACT_CTL
+    table - shouldn't surface as a fourth, unnamed mode value if something else set it.
+    """
+    fake_i2c.registers[_REG_ACT_INACT_CTL] = 0x2 << 4
+    assert adxl366.link_loop_mode == LinkLoopMode.DEFAULT
+
+
+def test_link_loop_mode_preserves_other_act_inact_ctl_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.enable_motion_detection()
+    adxl366.enable_inactivity_detection()
+    adxl366.link_loop_mode = LinkLoopMode.LOOPED
+    assert fake_i2c.registers[_REG_ACT_INACT_CTL] & _ACT_INACT_CTL_ACT_MASK == _ACTIVITY_ENABLE
+    assert (fake_i2c.registers[_REG_ACT_INACT_CTL] & 0x0C) >> _ACT_INACT_CTL_INACT_SHIFT == _ACTIVITY_ENABLE
 
 
 # -- events --
@@ -157,11 +398,22 @@ def test_events_reflects_status_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> Non
     assert events["fifo_overrun"] is False
 
 
+def test_events_reflects_status_2_and_status_3_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    fake_i2c.registers[_REG_STATUS_2] = 0b0000_0011  # TAP_ONE + TAP_TWO
+    fake_i2c.registers[_REG_STATUS_3] = 0b0000_0001  # PEDOMETER_OVERFLOW
+    events = adxl366.events
+    assert events["single_tap"] is True
+    assert events["double_tap"] is True
+    assert events["pedometer_overflow"] is True
+    assert events["temp_adc_low"] is False
+    assert events["fuse_error"] is False
+
+
 # -- interrupt mapping --
 
 
 def test_map_interrupt_writes_expected_bytes(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
-    adxl366.map_interrupt(1, {"data_ready", "activity", "double_tap"})
+    adxl366.map_interrupt(1, {"data_ready", "motion", "double_tap"})
     assert fake_i2c.registers[_REG_INTMAP1_LWR] == 0b0001_0001
     assert fake_i2c.registers[_REG_INTMAP1_UPPER] == 0b0000_0010
 
@@ -229,7 +481,7 @@ def test_self_test_passes_within_expected_delta(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    readings = iter([0, 500])
+    readings = iter([0] * _SELF_TEST_SAMPLE_COUNT + [700] * _SELF_TEST_SAMPLE_COUNT)
     monkeypatch.setattr(type(adxl366), "raw_x", property(lambda _self: next(readings)))
     assert adxl366.self_test() is True
 
@@ -239,9 +491,74 @@ def test_self_test_fails_outside_expected_delta(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
-    readings = iter([0, 1])
+    readings = iter([0] * _SELF_TEST_SAMPLE_COUNT + [100] * _SELF_TEST_SAMPLE_COUNT)
     monkeypatch.setattr(type(adxl366), "raw_x", property(lambda _self: next(readings)))
     assert adxl366.self_test() is False
+
+
+# -- tap detection --
+
+
+def test_enable_tap_detection_single_writes_expected_registers(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.enable_tap_detection(threshold=40, duration=0.005)
+    assert fake_i2c.registers[_REG_TAP_THRESH] == 40
+    assert fake_i2c.registers[_REG_TAP_DUR] == 8  # 0.005s / 625us = 8
+    assert fake_i2c.registers[_REG_TAP_LATENT] == 0  # 0 disables double-tap
+
+
+def test_enable_tap_detection_double_writes_latency_and_window(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.enable_tap_detection(double_tap=True, latency=0.025, window=0.05)
+    assert fake_i2c.registers[_REG_TAP_LATENT] == 20  # 0.025s / 1.25ms
+    assert fake_i2c.registers[_REG_TAP_WINDOW] == 40  # 0.05s / 1.25ms
+
+
+def test_enable_tap_detection_rejects_out_of_range_threshold(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="threshold"):
+        adxl366.enable_tap_detection(threshold=300)
+
+
+def test_disable_tap_detection_zeroes_threshold(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.enable_tap_detection(threshold=40)
+    adxl366.disable_tap_detection()
+    assert fake_i2c.registers[_REG_TAP_THRESH] == 0
+
+
+# -- axis masking --
+
+
+def test_tap_axis_roundtrip_and_register_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.tap_axis = TapAxis.Z_AXIS
+    assert adxl366.tap_axis == TapAxis.Z_AXIS
+    assert (fake_i2c.registers[_REG_AXIS_MASK] >> 4) & 0x03 == TapAxis.Z_AXIS
+
+
+def test_tap_axis_setter_rejects_invalid_value(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="TapAxis"):
+        adxl366.tap_axis = 0x3
+
+
+def test_blocked_axes_defaults_to_empty(adxl366: ADXL366) -> None:
+    assert adxl366.blocked_axes == frozenset()
+
+
+def test_blocked_axes_roundtrip_and_register_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.blocked_axes = {"x", "z"}
+    assert adxl366.blocked_axes == frozenset({"x", "z"})
+    assert fake_i2c.registers[_REG_AXIS_MASK] & 0x07 == 0x05
+
+    adxl366.blocked_axes = set()
+    assert adxl366.blocked_axes == frozenset()
+
+
+def test_blocked_axes_rejects_unknown_axis_name(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="unknown axis"):
+        adxl366.blocked_axes = {"w"}
+
+
+def test_blocked_axes_preserves_tap_axis_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.tap_axis = TapAxis.Y_AXIS
+    adxl366.blocked_axes = {"y"}
+    assert adxl366.tap_axis == TapAxis.Y_AXIS
 
 
 # -- ADXL366-only features --
