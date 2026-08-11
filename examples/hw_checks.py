@@ -38,6 +38,8 @@ _FIFO_RAW_MAGNITUDE_MAX = 8191  # full-scale 14-bit signed magnitude ceiling
 _PEDOMETER_STEP_TARGET = 8  # datasheet: steps only certify in groups of 8+ consecutive valid steps
 _PEDOMETER_WAIT_TIMEOUT_S = 30.0
 _PEDOMETER_POLL_INTERVAL_S = 0.5
+_ORIENTATION_SETTLE_S = 3.0
+_ORIENTATION_AXES = ("X", "Y", "Z")
 
 
 def _report(name: str, passed: bool, detail: str = "") -> bool:
@@ -238,6 +240,36 @@ def check_pedometer(accel: ADXL366) -> bool:
     return _report("pedometer step count", ok, f"steps={steps}")
 
 
+def _check_axis_orientation(accel: ADXL367, index: int, label: str) -> bool:
+    print(
+        f"Orient the board flat with its {label}-axis (per the board's silkscreen) "
+        "pointing straight up, then hold still...",
+    )
+    time.sleep(_ORIENTATION_SETTLE_S)
+    values = accel.acceleration
+    target = values[index]
+    others = [abs(v) for i, v in enumerate(values) if i != index]
+    magnitude_ok = abs(target - _STANDARD_GRAVITY) < _GRAVITY_MAGNITUDE_TOLERANCE_MPS2
+    dominant = target > max(others)
+    detail = f"x={values[0]:+.2f} y={values[1]:+.2f} z={values[2]:+.2f} m/s^2"
+    return _report(f"{label}-axis orientation (up)", magnitude_ok and dominant, detail)
+
+
+def check_orientation(accel: ADXL367) -> bool:
+    """Confirm each axis's sign matches the board's silkscreen labeling.
+
+    For each axis in turn, orient the board with that axis's printed + direction
+    pointing up and confirm it reads ~+1g while clearly dominating the other two -
+    catches a mirrored/rotated placement or a mislabeled silkscreen print, which
+    magnitude-only checks like `check_at_rest_gravity` can't distinguish. A wrong-way
+    placement reads strongly negative on the target axis, so it fails the dominance
+    check naturally rather than needing a separate sign check.
+    """
+    results = [_check_axis_orientation(accel, i, label) for i, label in enumerate(_ORIENTATION_AXES)]
+    print(f"\n{sum(results)}/{len(results)} orientation checks passed")
+    return all(results)
+
+
 def run_interactive(accel: ADXL367, int1_pin: "DigitalInOut", int2_pin: "DigitalInOut") -> bool:
     """Run the checks that require physically handling the board, in sequence.
 
@@ -247,6 +279,7 @@ def run_interactive(accel: ADXL367, int1_pin: "DigitalInOut", int2_pin: "Digital
     results = [
         check_motion_interrupt(accel, int1_pin),
         check_inactivity_interrupt(accel, int2_pin),
+        check_orientation(accel),
     ]
     if isinstance(accel, ADXL366):
         results.append(check_pedometer(accel))
