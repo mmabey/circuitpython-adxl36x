@@ -31,6 +31,7 @@ from adxl36x import (
     FIFOMode,
     OpMode,
     Range,
+    WakeupRate,
     _decode_s14,
 )
 
@@ -102,6 +103,25 @@ def test_data_rate_roundtrip_and_register_bits(adxl366: ADXL366, fake_i2c: FakeI
     adxl366.data_rate = DataRate.RATE_400_HZ
     assert adxl366.data_rate == DataRate.RATE_400_HZ
     assert fake_i2c.registers[_REG_FILTER_CTL] & 0x07 == DataRate.RATE_400_HZ
+
+
+def test_wakeup_mode_roundtrip(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.wakeup_mode = True
+    assert adxl366.wakeup_mode is True
+    assert fake_i2c.registers[0x2D] & 0x08
+    adxl366.wakeup_mode = False
+    assert adxl366.wakeup_mode is False
+
+
+def test_wakeup_rate_roundtrip_and_register_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.wakeup_rate = WakeupRate.RATE_3_SPS
+    assert adxl366.wakeup_rate == WakeupRate.RATE_3_SPS
+    assert (fake_i2c.registers[0x39] >> 6) & 0x03 == WakeupRate.RATE_3_SPS
+
+
+def test_wakeup_rate_setter_rejects_invalid_value(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="WakeupRate"):
+        adxl366.wakeup_rate = 7
 
 
 # -- acceleration decode/scale --

@@ -83,6 +83,8 @@ _RESET_KEY = const(0x52)
 
 # -- POWER_CTL (0x2D) --
 _POWER_CTL_MODE_MASK = const(0x03)
+_POWER_CTL_AUTOSLEEP = const(0x04)
+_POWER_CTL_WAKEUP = const(0x08)
 
 
 class OpMode:
@@ -90,6 +92,20 @@ class OpMode:
 
     STANDBY = const(0x00)
     MEASURE = const(0x02)
+
+
+# -- TIMER_CTL (0x39) --
+_TIMER_CTL_WAKEUP_RATE_MASK = const(0xC0)
+_TIMER_CTL_WAKEUP_RATE_SHIFT = const(6)
+
+
+class WakeupRate:
+    """Values for `ADXL367.wakeup_rate`, the sampling rate while `wakeup_mode` is enabled."""
+
+    RATE_12_SPS = const(0x00)
+    RATE_6_SPS = const(0x01)
+    RATE_3_SPS = const(0x02)
+    RATE_1_5_SPS = const(0x03)
 
 
 # -- FILTER_CTL (0x2C) --
@@ -480,6 +496,36 @@ class ADXL367:
     @power_mode.setter
     def power_mode(self, mode: int) -> None:
         self._write_masked(_REG_POWER_CTL, mode, _POWER_CTL_MODE_MASK)
+
+    @property
+    def wakeup_mode(self) -> bool:
+        """Whether wake-up mode (periodic low-power sampling) is enabled.
+
+        See `wakeup_rate` for the sampling interval used while enabled. Per the
+        datasheet, wake-up mode isn't supported in low-noise or ultra-low-noise mode.
+        """
+        return bool(self._read_u8(_REG_POWER_CTL) & _POWER_CTL_WAKEUP)
+
+    @wakeup_mode.setter
+    def wakeup_mode(self, enable: bool) -> None:
+        value = _POWER_CTL_WAKEUP if enable else 0
+        self._write_masked(_REG_POWER_CTL, value, _POWER_CTL_WAKEUP)
+
+    @property
+    def wakeup_rate(self) -> int:
+        """The sampling rate used while `wakeup_mode` is enabled, a `WakeupRate` value."""
+        return (self._read_u8(_REG_TIMER_CTL) & _TIMER_CTL_WAKEUP_RATE_MASK) >> _TIMER_CTL_WAKEUP_RATE_SHIFT
+
+    @wakeup_rate.setter
+    def wakeup_rate(self, value: int) -> None:
+        if not 0 <= value <= WakeupRate.RATE_1_5_SPS:
+            msg = f"invalid WakeupRate value: {value!r}"
+            raise ValueError(msg)
+        self._write_masked(
+            _REG_TIMER_CTL,
+            value << _TIMER_CTL_WAKEUP_RATE_SHIFT,
+            _TIMER_CTL_WAKEUP_RATE_MASK,
+        )
 
     @property
     def g_range(self) -> int:

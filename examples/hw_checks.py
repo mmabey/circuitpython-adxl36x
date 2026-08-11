@@ -15,7 +15,7 @@ try:
 except ImportError:
     TYPE_CHECKING = False  # ty: ignore[invalid-assignment]
 
-from adxl36x import ADXL366, ADXL367, DataRate, FIFOFormat, FIFOMode, Range
+from adxl36x import ADXL366, ADXL367, DataRate, FIFOFormat, FIFOMode, Range, WakeupRate
 
 if TYPE_CHECKING:
     from digitalio import DigitalInOut
@@ -41,6 +41,10 @@ _PEDOMETER_POLL_INTERVAL_S = 0.5
 _ORIENTATION_SETTLE_S = 3.0
 _ORIENTATION_AXES = ("X", "Y", "Z")
 _TAP_WAIT_TIMEOUT_S = 10.0
+_WAKEUP_MIN_INTERVAL_S = 0.2  # comfortably below RATE_3_SPS's ~320ms, above normal-mode noise
+_WAKEUP_SAMPLE_COUNT = 3
+_WAKEUP_TEST_TIMEOUT_S = 5.0
+_WAKEUP_POLL_INTERVAL_S = 0.02
 
 
 def _report(name: str, passed: bool, detail: str = "") -> bool:
@@ -127,6 +131,34 @@ def check_fifo(accel: ADXL367) -> bool:
     return _report("FIFO streaming", ok, detail)
 
 
+def check_wakeup_mode(accel: ADXL367) -> bool:
+    """Confirm wake-up mode's slower sample cadence vs. normal measurement mode.
+
+    No physical interaction needed. Enables wake-up mode at RATE_3_SPS (~320ms/sample)
+    and times consecutive DATA_READY events - that interval is unambiguously longer
+    than normal mode's sub-10ms cadence at any supported ODR, so a clean pass/fail
+    doesn't need precise timing, just "clearly slower."
+    """
+    accel.wakeup_rate = WakeupRate.RATE_3_SPS
+    accel.wakeup_mode = True
+    try:
+        _ = accel.acceleration  # discard any DATA_READY left over from normal mode
+        timestamps = []
+        deadline = time.monotonic() + _WAKEUP_TEST_TIMEOUT_S
+        while len(timestamps) < _WAKEUP_SAMPLE_COUNT and time.monotonic() < deadline:
+            if accel.events["data_ready"]:
+                timestamps.append(time.monotonic())
+                _ = accel.acceleration  # clears DATA_READY
+            else:
+                time.sleep(_WAKEUP_POLL_INTERVAL_S)
+    finally:
+        accel.wakeup_mode = False
+    intervals = [timestamps[i + 1] - timestamps[i] for i in range(len(timestamps) - 1)]
+    ok = len(intervals) >= _WAKEUP_SAMPLE_COUNT - 1 and all(i > _WAKEUP_MIN_INTERVAL_S for i in intervals)
+    detail = f"intervals={[round(i, 3) for i in intervals]}"
+    return _report("wake-up mode sample cadence", ok, detail)
+
+
 def check_z_nonlinearity_compensation(accel: ADXL366) -> bool:
     """ADXL366-only: verify the Z-axis nonlinearity compensation flag roundtrips."""
     original = accel.z_nonlinearity_compensation
@@ -147,6 +179,7 @@ def run_all(accel: ADXL367) -> bool:
         check_self_test,
         check_at_rest_gravity,
         check_fifo,
+        check_wakeup_mode,
     )
     results = [check(accel) for check in checks]
     if isinstance(accel, ADXL366):
