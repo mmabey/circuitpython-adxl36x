@@ -341,8 +341,29 @@ class ADXL367:
 
     _revid = _REVID_ADXL367
 
-    def __init__(self, i2c_bus: "I2C", *, address: int = _DEFAULT_I2C_ADDRESS) -> None:
-        self._bus: I2CBus | _SPIBus = I2CBus(i2c_bus, address)
+    def __init__(
+        self,
+        i2c_bus: "I2C | None" = None,
+        *,
+        address: int = _DEFAULT_I2C_ADDRESS,
+        spi_bus: "SPI | None" = None,
+        cs: "DigitalInOut | None" = None,
+        baudrate: int = 1_000_000,
+    ) -> None:
+        # `from_spi()` is the intended entry point for SPI - this constructor takes
+        # spi_bus/cs directly (rather than `from_spi()` building the instance itself via
+        # `cls.__new__()`) because CircuitPython's built-in types don't expose `__new__`
+        # as a callable attribute, unlike CPython (confirmed on real hardware).
+        if spi_bus is not None:
+            if cs is None:
+                msg = "spi_bus requires cs (the chip-select pin) to also be provided"
+                raise ValueError(msg)
+            self._bus: I2CBus | _SPIBus = _SPIBus(spi_bus, cs, baudrate=baudrate)
+        elif i2c_bus is not None:
+            self._bus = I2CBus(i2c_bus, address)
+        else:
+            msg = "ADXL367() requires either i2c_bus or spi_bus (see ADXL367.from_spi())"
+            raise ValueError(msg)
         self._range = Range.RANGE_2_G
         self._data_rate = DataRate.RATE_100_HZ
         self._initialize()
@@ -356,12 +377,7 @@ class ADXL367:
         baudrate: int = 1_000_000,
     ) -> "Self":
         """Construct a driver instance over SPI instead of I2C."""
-        self = cls.__new__(cls)
-        self._bus = _SPIBus(spi_bus, cs, baudrate=baudrate)
-        self._range = Range.RANGE_2_G
-        self._data_rate = DataRate.RATE_100_HZ
-        self._initialize()
-        return self
+        return cls(spi_bus=spi_bus, cs=cs, baudrate=baudrate)
 
     # -- low-level bus access --
 
