@@ -15,7 +15,7 @@ try:
 except ImportError:
     TYPE_CHECKING = False  # ty: ignore[invalid-assignment]
 
-from adxl36x import ADXL366, ADXL367, DataRate, FIFOFormat, FIFOMode, LinkLoopMode, Range, WakeupRate
+from adxl36x import ADXL366, ADXL367, DataRate, FIFOFormat, FIFOMode, LinkLoopMode, Range, TapAxis, WakeupRate
 
 if TYPE_CHECKING:
     from digitalio import DigitalInOut
@@ -98,6 +98,23 @@ def check_sens_roundtrip(accel: ADXL367) -> bool:
     accel.sens = original
     ok = positive_and_negative_ok and range_extremes_ok
     return _report("sens roundtrip", ok, f"restored to {original}")
+
+
+def check_axis_masking(accel: ADXL367) -> bool:
+    """Confirm tap_axis and blocked_axes both roundtrip, and that they share AXIS_MASK
+    without clobbering each other's bits.
+    """
+    original_tap_axis = accel.tap_axis
+    original_blocked = accel.blocked_axes
+    accel.tap_axis = TapAxis.Z_AXIS
+    accel.blocked_axes = {"x", "y"}
+    tap_axis_ok = accel.tap_axis == TapAxis.Z_AXIS
+    blocked_axes_ok = accel.blocked_axes == frozenset({"x", "y"})
+    accel.tap_axis = original_tap_axis
+    accel.blocked_axes = original_blocked
+    ok = tap_axis_ok and blocked_axes_ok
+    detail = f"tap_axis={tap_axis_ok} blocked_axes={blocked_axes_ok}"
+    return _report("axis masking (tap_axis + blocked_axes)", ok, detail)
 
 
 def check_temperature(accel: ADXL367) -> bool:
@@ -194,6 +211,7 @@ def run_all(accel: ADXL367) -> bool:
         check_range_and_rate_roundtrip,
         check_offset_roundtrip,
         check_sens_roundtrip,
+        check_axis_masking,
         check_temperature,
         check_self_test,
         check_at_rest_gravity,

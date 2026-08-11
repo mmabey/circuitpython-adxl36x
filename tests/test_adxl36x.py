@@ -11,6 +11,7 @@ from adxl36x import (
     _ACTIVITY_ENABLE,
     _REFERENCED_ACTIVITY_ENABLE,
     _REG_ACT_INACT_CTL,
+    _REG_AXIS_MASK,
     _REG_FIFO_ENTRIES_H,
     _REG_FIFO_ENTRIES_L,
     _REG_FILTER_CTL,
@@ -35,6 +36,7 @@ from adxl36x import (
     LinkLoopMode,
     OpMode,
     Range,
+    TapAxis,
     WakeupRate,
     _decode_s14,
 )
@@ -455,6 +457,44 @@ def test_disable_tap_detection_zeroes_threshold(adxl366: ADXL366, fake_i2c: Fake
     adxl366.enable_tap_detection(threshold=40)
     adxl366.disable_tap_detection()
     assert fake_i2c.registers[0x2F] == 0
+
+
+# -- axis masking --
+
+
+def test_tap_axis_roundtrip_and_register_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.tap_axis = TapAxis.Z_AXIS
+    assert adxl366.tap_axis == TapAxis.Z_AXIS
+    assert (fake_i2c.registers[_REG_AXIS_MASK] >> 4) & 0x03 == TapAxis.Z_AXIS
+
+
+def test_tap_axis_setter_rejects_invalid_value(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="TapAxis"):
+        adxl366.tap_axis = 0x3
+
+
+def test_blocked_axes_defaults_to_empty(adxl366: ADXL366) -> None:
+    assert adxl366.blocked_axes == frozenset()
+
+
+def test_blocked_axes_roundtrip_and_register_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.blocked_axes = {"x", "z"}
+    assert adxl366.blocked_axes == frozenset({"x", "z"})
+    assert fake_i2c.registers[_REG_AXIS_MASK] & 0x07 == 0x05
+
+    adxl366.blocked_axes = set()
+    assert adxl366.blocked_axes == frozenset()
+
+
+def test_blocked_axes_rejects_unknown_axis_name(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="unknown axis"):
+        adxl366.blocked_axes = {"w"}
+
+
+def test_blocked_axes_preserves_tap_axis_bits(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.tap_axis = TapAxis.Y_AXIS
+    adxl366.blocked_axes = {"y"}
+    assert adxl366.tap_axis == TapAxis.Y_AXIS
 
 
 # -- ADXL366-only features --

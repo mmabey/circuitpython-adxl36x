@@ -209,6 +209,31 @@ _SENS_BITS = const(6)
 _SENS_MIN = const(-32)
 _SENS_MAX = const(31)
 
+# -- AXIS_MASK (0x43) --
+_AXIS_MASK_TAP_AXIS_MASK = const(0x30)
+_AXIS_MASK_TAP_AXIS_SHIFT = const(4)
+_AXIS_MASK_ACT_INACT_MASK = const(0x07)
+_AXIS_MASK_ACT_INACT_X = const(0x01)
+_AXIS_MASK_ACT_INACT_Y = const(0x02)
+_AXIS_MASK_ACT_INACT_Z = const(0x04)
+
+
+class TapAxis:
+    """Values for `ADXL367.tap_axis` (AXIS_MASK's TAP_AXIS bits[5:4]).
+
+    Named X_AXIS/Y_AXIS/Z_AXIS rather than bare X/Y/Z: CircuitPython's `const()`
+    folding isn't class-scoped - it's a whole-module substitution keyed by bare
+    identifier, so reusing a name already used as a const elsewhere in the file
+    (`FIFOFormat.X/Y/Z`, in this case) breaks on-device compilation with a
+    confusing `SyntaxError: can't assign to expression`, even though the exact
+    same code is valid, unambiguous Python to CPython/ty.
+    """
+
+    X_AXIS = const(0x0)
+    Y_AXIS = const(0x1)
+    Z_AXIS = const(0x2)
+
+
 # -- FIFO --
 _FIFO_CONTROL_MODE_MASK = const(0x03)
 _FIFO_CONTROL_FORMAT_MASK = const(0x78)
@@ -988,6 +1013,53 @@ class ADXL367:
         Per the datasheet, a TAP_THRESH value of 0 disables both.
         """
         self._write_u8(_REG_TAP_THRESH, 0)
+
+    # -- axis masking (AXIS_MASK) --
+
+    @property
+    def tap_axis(self) -> int:
+        """Which axis tap detection evaluates, a `TapAxis` value."""
+        return (self._read_u8(_REG_AXIS_MASK) & _AXIS_MASK_TAP_AXIS_MASK) >> _AXIS_MASK_TAP_AXIS_SHIFT
+
+    @tap_axis.setter
+    def tap_axis(self, value: int) -> None:
+        if value not in (TapAxis.X_AXIS, TapAxis.Y_AXIS, TapAxis.Z_AXIS):
+            msg = f"invalid TapAxis value: {value!r}"
+            raise ValueError(msg)
+        self._write_masked(_REG_AXIS_MASK, value << _AXIS_MASK_TAP_AXIS_SHIFT, _AXIS_MASK_TAP_AXIS_MASK)
+
+    @property
+    def blocked_axes(self) -> "frozenset[str]":
+        """Axes currently excluded from activity/inactivity detection (none, by default).
+
+        Per the datasheet, a blocked axis is left out of both the activity and
+        inactivity threshold comparisons - it doesn't affect `tap_axis` or plain
+        acceleration reads.
+        """
+        raw = self._read_u8(_REG_AXIS_MASK)
+        blocked = set()
+        if raw & _AXIS_MASK_ACT_INACT_X:
+            blocked.add("x")
+        if raw & _AXIS_MASK_ACT_INACT_Y:
+            blocked.add("y")
+        if raw & _AXIS_MASK_ACT_INACT_Z:
+            blocked.add("z")
+        return frozenset(blocked)
+
+    @blocked_axes.setter
+    def blocked_axes(self, axes: "set[str] | frozenset[str]") -> None:
+        unknown = set(axes) - {"x", "y", "z"}
+        if unknown:
+            msg = f"unknown axis name(s): {sorted(unknown)!r}"
+            raise ValueError(msg)
+        value = 0
+        if "x" in axes:
+            value |= _AXIS_MASK_ACT_INACT_X
+        if "y" in axes:
+            value |= _AXIS_MASK_ACT_INACT_Y
+        if "z" in axes:
+            value |= _AXIS_MASK_ACT_INACT_Z
+        self._write_masked(_REG_AXIS_MASK, value, _AXIS_MASK_ACT_INACT_MASK)
 
 
 class ADXL366(ADXL367):
