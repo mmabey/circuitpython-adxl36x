@@ -75,11 +75,29 @@ def check_range_and_rate_roundtrip(accel: ADXL367) -> bool:
 
 
 def check_offset_roundtrip(accel: ADXL367) -> bool:
+    """Also exercises the negative half of the signed range - a prior version of this
+    field's twos-complement decoding wasn't sign-extended, so only positive values ever
+    got hw-verified even though the setter silently rejected negatives outright.
+    """
     original = accel.offset
-    accel.offset = (3, 5, 7)
-    ok = accel.offset == (3, 5, 7)
+    accel.offset = (3, -5, 7)
+    positive_and_negative_ok = accel.offset == (3, -5, 7)
+    accel.offset = (-16, 0, 15)
+    range_extremes_ok = accel.offset == (-16, 0, 15)
     accel.offset = original
+    ok = positive_and_negative_ok and range_extremes_ok
     return _report("offset roundtrip", ok, f"restored to {original}")
+
+
+def check_sens_roundtrip(accel: ADXL367) -> bool:
+    original = accel.sens
+    accel.sens = (3, -5, 7)
+    positive_and_negative_ok = accel.sens == (3, -5, 7)
+    accel.sens = (-32, 0, 31)
+    range_extremes_ok = accel.sens == (-32, 0, 31)
+    accel.sens = original
+    ok = positive_and_negative_ok and range_extremes_ok
+    return _report("sens roundtrip", ok, f"restored to {original}")
 
 
 def check_temperature(accel: ADXL367) -> bool:
@@ -175,6 +193,7 @@ def run_all(accel: ADXL367) -> bool:
         check_identification,
         check_range_and_rate_roundtrip,
         check_offset_roundtrip,
+        check_sens_roundtrip,
         check_temperature,
         check_self_test,
         check_at_rest_gravity,
@@ -185,7 +204,8 @@ def run_all(accel: ADXL367) -> bool:
     if isinstance(accel, ADXL366):
         results.append(check_z_nonlinearity_compensation(accel))
     main_msg = f"{sum(results)}/{len(results)} checks passed"
-    print(f"\n{main_msg}\n{'-' * len(main_msg)}\n")
+    sep = f"\n{'-' * len(main_msg)}\n"
+    print(f"\n{sep}{main_msg}{sep}\n")
     return all(results)
 
 
@@ -378,7 +398,8 @@ def check_orientation(accel: ADXL367) -> bool:
     """
     results = [_check_axis_orientation(accel, i, label) for i, label in enumerate(_ORIENTATION_AXES)]
     main_msg = f"{sum(results)}/{len(results)} orientation checks passed"
-    print(f"\n{main_msg}\n{'-' * len(main_msg)}\n")
+    sep = f"\n{'-' * len(main_msg)}\n"
+    print(f"\n{sep}{main_msg}{sep}\n")
     return all(results)
 
 
@@ -398,5 +419,6 @@ def run_interactive(accel: ADXL367, int1_pin: "DigitalInOut", int2_pin: "Digital
     if isinstance(accel, ADXL366):
         results.append(check_pedometer(accel))
     main_msg = f"{sum(results)}/{len(results)} interactive checks passed"
-    print(f"\n{main_msg}\n{'-' * len(main_msg)}\n")
+    sep = f"\n{'-' * len(main_msg)}\n"
+    print(f"\n{sep}{main_msg}{sep}\n")
     return all(results)

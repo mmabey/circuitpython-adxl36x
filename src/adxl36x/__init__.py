@@ -62,6 +62,9 @@ _REG_TAP_WINDOW = const(0x32)
 _REG_X_OFFSET = const(0x33)
 _REG_Y_OFFSET = const(0x34)
 _REG_Z_OFFSET = const(0x35)
+_REG_X_SENS = const(0x36)
+_REG_Y_SENS = const(0x37)
+_REG_Z_SENS = const(0x38)
 _REG_TIMER_CTL = const(0x39)
 _REG_INTMAP1_UPPER = const(0x3A)
 _REG_INTMAP2_UPPER = const(0x3B)
@@ -194,8 +197,17 @@ _TEMP_CTL_EN = const(0x01)
 _TEMP_CTL_NL_COMP_EN = const(0x80)
 _ADC_CTL_EN = const(0x01)
 
-# -- Per-axis offset trim (0x33-0x35) --
-_OFFSET_MAX = const(0x1F)
+# -- Per-axis offset trim (0x33-0x35): twos-complement, bit 4 is the sign bit, 15mg/LSB --
+_OFFSET_MASK = const(0x1F)
+_OFFSET_BITS = const(5)
+_OFFSET_MIN = const(-16)
+_OFFSET_MAX = const(15)
+
+# -- Per-axis sensitivity trim (0x36-0x38): twos-complement, bit 5 is the sign bit, 1.56%/LSB --
+_SENS_MASK = const(0x3F)
+_SENS_BITS = const(6)
+_SENS_MIN = const(-32)
+_SENS_MAX = const(31)
 
 # -- FIFO --
 _FIFO_CONTROL_MODE_MASK = const(0x03)
@@ -293,6 +305,13 @@ def _decode_s14(msb: int, lsb: int) -> int:
     if value & 0x2000:
         value -= 0x4000
     return value
+
+
+def _sign_extend(value: int, bits: int) -> int:
+    """Sign-extend an unsigned `bits`-wide twos-complement field."""
+    sign_bit = 1 << (bits - 1)
+    value &= (1 << bits) - 1
+    return value - (1 << bits) if value & sign_bit else value
 
 
 # -- bus transport --
@@ -632,27 +651,51 @@ class ADXL367:
         x, y, z = self.raw_acceleration
         return (x * scale, y * scale, z * scale)
 
-    # -- offsets --
+    # -- offsets / sensitivity trim --
 
     @property
     def offset(self) -> tuple[int, int, int]:
-        """Per-axis trim offsets: raw 5-bit codes (0-31); units unconfirmed."""
+        """Per-axis offset trim: signed 5-bit codes (-16 to 15), 15mg/LSB per the datasheet."""
         return (
-            self._read_u8(_REG_X_OFFSET) & _OFFSET_MAX,
-            self._read_u8(_REG_Y_OFFSET) & _OFFSET_MAX,
-            self._read_u8(_REG_Z_OFFSET) & _OFFSET_MAX,
+            _sign_extend(self._read_u8(_REG_X_OFFSET), _OFFSET_BITS),
+            _sign_extend(self._read_u8(_REG_Y_OFFSET), _OFFSET_BITS),
+            _sign_extend(self._read_u8(_REG_Z_OFFSET), _OFFSET_BITS),
         )
 
     @offset.setter
     def offset(self, value: tuple[int, int, int]) -> None:
         x, y, z = value
         for axis_value in (x, y, z):
-            if not 0 <= axis_value <= _OFFSET_MAX:
-                msg = f"offset values must be in range 0-{_OFFSET_MAX}, got {value!r}"
+            if not _OFFSET_MIN <= axis_value <= _OFFSET_MAX:
+                msg = f"offset values must be in range {_OFFSET_MIN}-{_OFFSET_MAX}, got {value!r}"
                 raise ValueError(msg)
-        self._write_u8(_REG_X_OFFSET, x)
-        self._write_u8(_REG_Y_OFFSET, y)
-        self._write_u8(_REG_Z_OFFSET, z)
+        self._write_u8(_REG_X_OFFSET, x & _OFFSET_MASK)
+        self._write_u8(_REG_Y_OFFSET, y & _OFFSET_MASK)
+        self._write_u8(_REG_Z_OFFSET, z & _OFFSET_MASK)
+
+    @property
+    def sens(self) -> tuple[int, int, int]:
+        """Per-axis gain trim: signed 6-bit codes (-32 to 31), 1.56%/LSB per the datasheet.
+
+        Shares headroom with the factory trim, so a part with high factory sensitivity may
+        have less room available here (per the datasheet's X_SENS/Y_SENS/Z_SENS notes).
+        """
+        return (
+            _sign_extend(self._read_u8(_REG_X_SENS), _SENS_BITS),
+            _sign_extend(self._read_u8(_REG_Y_SENS), _SENS_BITS),
+            _sign_extend(self._read_u8(_REG_Z_SENS), _SENS_BITS),
+        )
+
+    @sens.setter
+    def sens(self, value: tuple[int, int, int]) -> None:
+        x, y, z = value
+        for axis_value in (x, y, z):
+            if not _SENS_MIN <= axis_value <= _SENS_MAX:
+                msg = f"sens values must be in range {_SENS_MIN}-{_SENS_MAX}, got {value!r}"
+                raise ValueError(msg)
+        self._write_u8(_REG_X_SENS, x & _SENS_MASK)
+        self._write_u8(_REG_Y_SENS, y & _SENS_MASK)
+        self._write_u8(_REG_Z_SENS, z & _SENS_MASK)
 
     # -- activity/inactivity detection --
 

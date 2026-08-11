@@ -21,6 +21,8 @@ from adxl36x import (
     _REG_TIME_ACT,
     _REG_TIME_INACT_H,
     _REG_TIME_INACT_L,
+    _REG_X_OFFSET,
+    _REG_X_SENS,
     _REG_XDATA_H,
     _REVID_ADXL366,
     _REVID_ADXL367,
@@ -175,7 +177,7 @@ def test_acceleration_scaling_follows_range(adxl366: ADXL366, fake_i2c: FakeI2C)
     assert x == pytest.approx(expected)
 
 
-# -- offsets --
+# -- offsets / sensitivity trim --
 
 
 def test_offset_roundtrip(adxl366: ADXL366) -> None:
@@ -183,9 +185,43 @@ def test_offset_roundtrip(adxl366: ADXL366) -> None:
     assert adxl366.offset == (1, 2, 3)
 
 
+def test_offset_roundtrip_negative(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.offset = (-16, -1, 15)
+    assert adxl366.offset == (-16, -1, 15)
+    assert fake_i2c.registers[_REG_X_OFFSET] == 0x10
+    assert fake_i2c.registers[_REG_X_OFFSET + 1] == 0x1F
+
+
 def test_offset_rejects_out_of_range(adxl366: ADXL366) -> None:
     with pytest.raises(ValueError, match="offset"):
         adxl366.offset = (0, 0, 32)
+
+
+def test_offset_rejects_below_signed_range(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="offset"):
+        adxl366.offset = (0, 0, -17)
+
+
+def test_sens_roundtrip(adxl366: ADXL366) -> None:
+    adxl366.sens = (1, 2, 3)
+    assert adxl366.sens == (1, 2, 3)
+
+
+def test_sens_roundtrip_negative(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
+    adxl366.sens = (-32, -1, 31)
+    assert adxl366.sens == (-32, -1, 31)
+    assert fake_i2c.registers[_REG_X_SENS] == 0x20
+    assert fake_i2c.registers[_REG_X_SENS + 1] == 0x3F
+
+
+def test_sens_rejects_out_of_range(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="sens"):
+        adxl366.sens = (0, 0, 32)
+
+
+def test_sens_rejects_below_signed_range(adxl366: ADXL366) -> None:
+    with pytest.raises(ValueError, match="sens"):
+        adxl366.sens = (0, 0, -33)
 
 
 # -- activity/inactivity --
