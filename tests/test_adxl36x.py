@@ -389,7 +389,7 @@ def test_events_reflects_status_2_and_status_3_bits(adxl366: ADXL366, fake_i2c: 
 
 
 def test_map_interrupt_writes_expected_bytes(adxl366: ADXL366, fake_i2c: FakeI2C) -> None:
-    adxl366.map_interrupt(1, {"data_ready", "activity", "double_tap"})
+    adxl366.map_interrupt(1, {"data_ready", "motion", "double_tap"})
     assert fake_i2c.registers[_REG_INTMAP1_LWR] == 0b0001_0001
     assert fake_i2c.registers[_REG_INTMAP1_UPPER] == 0b0000_0010
 

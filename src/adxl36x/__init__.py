@@ -291,7 +291,7 @@ _INTERRUPT_EVENTS = {
     "fifo_ready": (False, 1),
     "fifo_watermark": (False, 2),
     "fifo_overrun": (False, 3),
-    "activity": (False, 4),
+    "motion": (False, 4),
     "inactivity": (False, 5),
     "awake": (False, 6),
     "active_low": (False, 7),
@@ -924,8 +924,8 @@ class ADXL367:
         - ``"awake"``: whether the device is currently active. Reflects live
           state rather than a latched event, so it never "clears" - see
           `autosleep`.
-        - ``"error"``: a user register error was detected (an SEU event
-          disturbed a register, or the device isn't configured).
+        - ``"user_register_error"``: a user register error was detected (an SEU
+          event disturbed a register, or the device isn't configured).
         - ``"single_tap"`` / ``"double_tap"``: a tap was detected (see
           `enable_tap_detection`) - clears on this read.
         - ``"temp_adc_low"`` / ``"temp_adc_high"``: `temperature`/`adc_value`
@@ -947,7 +947,7 @@ class ADXL367:
             "motion": bool(status & _STATUS_ACT),
             "inactivity": bool(status & _STATUS_INACT),
             "awake": bool(status & _STATUS_AWAKE),
-            "error": bool(status & _STATUS_ERR_USER_REGS),
+            "user_register_error": bool(status & _STATUS_ERR_USER_REGS),
             "single_tap": bool(status_2 & _STATUS_2_TAP_ONE),
             "double_tap": bool(status_2 & _STATUS_2_TAP_TWO),
             "temp_adc_low": bool(status_2 & _STATUS_2_TEMP_ADC_LOW),
@@ -969,16 +969,13 @@ class ADXL367:
             :const:`2` for INT2.
         :param events: The event names to route to `pin`, replacing any
             previous mapping. Valid names: ``"data_ready"``, ``"fifo_ready"``,
-            ``"fifo_watermark"``, ``"fifo_overrun"``, ``"activity"``,
+            ``"fifo_watermark"``, ``"fifo_overrun"``, ``"motion"``,
             ``"inactivity"``, ``"awake"``, ``"single_tap"``, ``"double_tap"``,
             ``"temp_adc_low"``, ``"temp_adc_high"``, ``"keep_alive_timer"``,
             ``"user_register_error"``, ``"fuse_error"`` - each corresponds to
-            the like-named key in `.events`, except ``"activity"``
-            (``.events["motion"]``) and ``"user_register_error"``
-            (``.events["error"]``), which are spelled differently here than in
-            `.events`. There's also ``"active_low"``, which isn't a status
-            flag at all - it reconfigures the pin itself to be active-low
-            instead of the default active-high.
+            the like-named key in `.events`. There's also ``"active_low"``,
+            which isn't a status flag at all - it reconfigures the pin itself
+            to be active-low instead of the default active-high.
         """
         if pin not in (1, 2):
             msg = f"pin must be 1 or 2, got {pin!r}"

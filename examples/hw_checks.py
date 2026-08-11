@@ -283,7 +283,7 @@ def check_motion_interrupt(accel: ADXL367, int1_pin: "DigitalInOut") -> bool:
     """
     print("\nHold the board still for a moment (capturing reference)...")
     time.sleep(_REFERENCE_SETTLE_S)
-    accel.map_interrupt(1, {"activity"})
+    accel.map_interrupt(1, {"motion"})
     accel.enable_motion_detection(threshold=_MOTION_THRESHOLD, time_=0, referenced=True)
     try:
         print(f"\nMOVE/SHAKE THE BOARD NOW - waiting up to {_MOTION_WAIT_TIMEOUT_S:.0f}s...")
