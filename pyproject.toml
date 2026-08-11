@@ -1,6 +1,6 @@
 [project]
 name = "circuitpython-adxl36x"
-version = "0.1.0"
+version = "0.2.0"
 description = "CircuitPython driver for the Analog Devices ADXL366/ADXL367 accelerometers"
 readme = "README.md"
 license = "MIT"
