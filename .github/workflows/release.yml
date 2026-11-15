@@ -76,7 +76,7 @@ jobs:
           mkdir -p bundle/lib/adxl36x
           /tmp/circuitpython/mpy-cross/build/mpy-cross \
             -o bundle/lib/adxl36x/__init__.mpy \
-            src/adxl36x/__init__.py
+            adxl36x/__init__.py
 
       - name: Zip bundle
         run: |
