@@ -50,14 +50,15 @@ dev = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.12.2,<0.13.0"]
+requires = ["uv_build>=0.13.8,<0.14.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-name = "adxl36x"
+module-root = ""
 
 [tool.ty.src]
-include = ["src/adxl36x", "tests"]
+include = ["adxl36x", "tests"]
 
 [tool.ruff]
 line-length = 120

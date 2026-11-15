@@ -72,7 +72,7 @@ project (noise modes). Contributions welcome.
 
 ## Installation
 
-On a CircuitPython board, copy `src/adxl36x/` into `CIRCUITPY/lib/adxl36x/`. No other bundle libraries are required -
+On a CircuitPython board, copy `adxl36x/` into `CIRCUITPY/lib/adxl36x/`. No other bundle libraries are required -
 this driver talks to `busio.I2C`/`busio.SPI` directly.
 
 For boards tight on RAM/flash, or if raw source ever fails to compile on-device, each [GitHub
