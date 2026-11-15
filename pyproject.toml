@@ -57,6 +57,13 @@ build-backend = "uv_build"
 module-name = "adxl36x"
 module-root = ""
 
+# Read by circuitpython-build-tools (not our build backend, see [build-system] above) to pin
+# exactly what it bundles. Without this it falls back to legacy autodetection, which has a bug:
+# once it spots the adxl36x/ package it stops checking directory names and sweeps every other
+# top-level .py file (tests/*.py included) into the bundle output alongside it.
+[tool.setuptools]
+packages = ["adxl36x"]
+
 [tool.ty.src]
 include = ["adxl36x", "tests"]
 
