@@ -10,9 +10,10 @@ except ImportError:
 from micropython import const
 
 if TYPE_CHECKING:
+    from typing import Self
+
     from busio import I2C, SPI
     from digitalio import DigitalInOut
-    from typing_extensions import Self
 
 _STANDARD_GRAVITY = 9.80665
 

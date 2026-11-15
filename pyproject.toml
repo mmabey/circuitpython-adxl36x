@@ -5,7 +5,7 @@ description = "CircuitPython driver for the Analog Devices ADXL366/ADXL367 accel
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     { name = "Mike Mabey", email = "email@mikemabey.com" },
 ]
